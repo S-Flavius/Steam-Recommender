@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Backlog Recommender</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>Rate & Categorize Your Backlog</h1>
+    <div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
+
+    <button class="btn-submit" id="trainBtn" onclick="generateRecommendations()">Train AI & Re-Cluster</button>
+    <div class="loading-text" id="loading">AI is crunching the data... Please wait...</div>
+
+    <div id="results" class="board"></div>
+
+    <script>
+        function updateGame(appid, action, btn, value=null) {
+            let card = btn.closest('.rate-card') || btn.closest('.game-card');
+            card.style.opacity = '0.5';
+
+            const payload = {appid: appid, action: action};
+            if (value !== null) payload.value = value;
+
+            fetch('/update_game', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            }).then(() => {
+                if (action !== 'rate') {
+                    card.style.opacity = '0';
+                    setTimeout(() => card.remove(), 300);
+                } else {
+                    card.style.opacity = '1';
+                }
+            });
+        }
+
+        function rateCard(appid, slider) {
+            const val = parseInt(slider.value);
+            slider.nextElementSibling.textContent = val;
+            updateGame(appid, 'rate', slider, val);
+        }
+
+        function finishGame(appid, btn) {
+            let card = btn.closest('.game-card');
+            let ratingSlider = card.querySelector('input[type="range"]');
+            let ratingValue = ratingSlider ? parseInt(ratingSlider.value) : 0;
+            updateGame(appid, 'finish', btn, ratingValue);
+        }
+
+        function toggleWhy(btn) {
+            const box = btn.nextElementSibling;
+            box.classList.toggle('open');
+            btn.textContent = box.classList.contains('open') ? 'Hide' : 'Why?';
+        }
+
+        function generateRecommendations() {
+            const trainBtn = document.getElementById('trainBtn');
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+
+            trainBtn.disabled = true;
+            loading.style.display = 'block';
+            results.innerHTML = '';
+
+            let ratings = {};
+            document.querySelectorAll('.rate-slider').forEach(s => {
+                let val = parseInt(s.value);
+                if (val > 0) {
+                    ratings[s.getAttribute('data-appid')] = val;
+                }
+            });
+
+            fetch('/recommend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(ratings)
+            })
+            .then(res => res.json())
+            .then((data) => {
+                trainBtn.disabled = false;
+                loading.style.display = 'none';
+                results.innerHTML = data.results_html;
+                document.getElementById('carousel').innerHTML = data.carousel_html;
+            })
+            .catch(err => {
+                console.error("AI Training Failed:", err);
+                trainBtn.disabled = false;
+                loading.style.display = 'none';
+                alert("Something went wrong with the AI training.");
+            });
+        }
+    </script>
+</body>
+</html>
