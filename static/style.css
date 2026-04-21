@@ -1,0 +1,172 @@
+body {
+    font-family: 'Segoe UI', sans-serif;
+    background-color: #121a25;
+    color: #c7d5e0;
+    padding: 20px;
+}
+
+.carousel-container {
+    display: flex;
+    overflow-x: auto;
+    gap: 15px;
+    padding-bottom: 20px;
+    border-bottom: 2px solid #2a475e;
+    min-height: 250px;
+}
+
+.rate-card {
+    position: relative;
+    background: #1b2838;
+    padding: 10px;
+    border-radius: 8px;
+    min-width: 200px;
+    text-align: center;
+    transition: opacity 0.3s;
+}
+
+.rate-card img {
+    width: 100%;
+    border-radius: 4px;
+}
+
+.btn-group {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    display: flex;
+    gap: 5px;
+}
+
+.icon-btn {
+    background: rgba(0, 0, 0, 0.7);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    color: white;
+    padding: 5px 8px;
+    font-size: 0.75em;
+}
+
+.icon-btn:hover {
+    transform: scale(1.05);
+}
+
+.btn-finish:hover {
+    background: #a3e635;
+}
+
+.btn-unfinish:hover {
+    background: #66c0f4;
+}
+
+.btn-up-next:hover {
+    background: #ff6b35;
+}
+
+.btn-ban:hover {
+    background: #ff3b3b;
+}
+
+.btn-ignore:hover {
+    background: #f1c40f;
+}
+
+.btn-submit {
+    display: block;
+    width: 300px;
+    margin: 20px auto;
+    padding: 15px;
+    background: #66c0f4;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.btn-submit:hover {
+    background: #4b6982;
+    color: #fff;
+}
+
+.board {
+    display: flex;
+    gap: 15px;
+    overflow-x: auto;
+    padding-top: 20px;
+}
+
+.column {
+    flex: 0 0 280px;
+    background: #1b2838;
+    padding: 15px;
+    border-radius: 8px;
+    border-top: 4px solid #66c0f4;
+}
+
+.col-title {
+    font-weight: bold;
+    margin-bottom: 10px;
+    font-size: 1.1em;
+}
+
+.game-card {
+    background: #2a475e;
+    padding: 8px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    position: relative;
+}
+
+.game-card img {
+    width: 100%;
+    border-radius: 4px;
+}
+
+.match-score {
+    color: #a3e635;
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+.loading-text {
+    text-align: center;
+    display: none;
+    margin-top: 10px;
+    font-style: italic;
+    color: #66c0f4;
+}
+
+/* Explanation styles */
+.why-toggle {
+    background: none;
+    border: 1px solid #4b6982;
+    color: #66c0f4;
+    border-radius: 4px;
+    font-size: 0.75em;
+    cursor: pointer;
+    padding: 2px 7px;
+    margin-top: 4px;
+}
+
+.why-toggle:hover {
+    background: #1b2838;
+}
+
+.why-box {
+    display: none;
+    margin-top: 6px;
+    background: #1b2838;
+    border-radius: 5px;
+    padding: 6px 8px;
+    font-size: 0.78em;
+    line-height: 1.6;
+    color: #b8c9d9;
+}
+
+.why-box.open {
+    display: block;
+}
+
+.why-box span {
+    display: block;
+}
