@@ -65,7 +65,7 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     highlight_tags = [t for t in cand_tags if liked_tags.get(t, 0) >= 2]
     highlight_tags.sort(key=lambda t: liked_tags.get(t, 0), reverse=True)
     if highlight_tags:
-        tag_str = ", ".join(t.replace("_", " ").title() for t in highlight_tags[:3])
+        tag_str = ", ".join(t.replace("_", " ").title() for t in highlight_tags[:10])
         reasons.append(f"Matches your taste in: {tag_str}")
 
     if not reasons:

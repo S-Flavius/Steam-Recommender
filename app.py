@@ -1,4 +1,5 @@
 import math
+import threading
 import time
 
 import numpy as np
@@ -15,13 +16,35 @@ from config import (
     CAROUSEL_SIZE,
 )
 from database import get_db, init_db, cleanup_expired_temp_ratings
-from sync import sync_steam_library, sync_cedb_difficulties, get_game_data
+from sync import sync_steam_library, sync_cedb_difficulties, sync_game_tags, get_game_data
 from recommender import render_game_card, build_persistent_sections
 
 app = Flask(__name__)
 
 # Initialize database on startup
 init_db()
+
+# Background sync tracking
+_sync_lock = threading.Lock()
+_sync_in_progress = False
+
+
+def _background_sync():
+    """Run sync tasks in the background."""
+    global _sync_in_progress
+    
+    with _sync_lock:
+        if _sync_in_progress:
+            return
+        _sync_in_progress = True
+    
+    try:
+        sync_steam_library()
+        sync_cedb_difficulties()
+        sync_game_tags()
+    finally:
+        with _sync_lock:
+            _sync_in_progress = False
 
 
 def get_carousel_html():
@@ -64,8 +87,9 @@ def get_carousel_html():
 @app.route('/')
 def index():
     """Main page - sync library and show rating carousel."""
-    sync_steam_library()
-    sync_cedb_difficulties()
+    # Start background sync
+    threading.Thread(target=_background_sync, daemon=True).start()
+    
     cleanup_expired_temp_ratings()
     return render_template('index.html', carousel_html=get_carousel_html())
 

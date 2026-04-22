@@ -2,6 +2,7 @@ import math
 import time
 
 import requests
+from tqdm import tqdm
 
 from config import STEAM_API_KEY, STEAM_ID, CEDB_USER_ID
 from database import get_db
@@ -23,12 +24,11 @@ def sync_steam_library():
         conn = get_db()
         for g in games:
             conn.execute('''
-                INSERT INTO games (appid, name, playtime, last_played)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(appid) DO UPDATE SET
-                    playtime    = excluded.playtime,
-                    last_played = excluded.last_played
-            ''', (
+                         INSERT INTO games (appid, name, playtime, last_played)
+                         VALUES (?, ?, ?, ?)
+                         ON CONFLICT(appid) DO UPDATE SET playtime    = excluded.playtime,
+                                                          last_played = excluded.last_played
+                         ''', (
                 g["appid"],
                 g.get("name", "Unknown"),
                 g.get("playtime_forever", 0),
@@ -73,17 +73,21 @@ def sync_cedb_difficulties():
     conn.close()
 
 
-def get_game_data(appid):
+def get_game_data(appid, force_refresh=False):
     """
     Fetch game tags and Steam score from SteamSpy.
     Returns cached data if available, otherwise fetches and stores it.
+    
+    Args:
+        appid: The Steam app ID
+        force_refresh: If True, always fetch fresh data from SteamSpy
     """
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT tags, steam_score FROM games WHERE appid = ?", (appid,))
     row = c.fetchone()
 
-    if row and row['tags']:
+    if not force_refresh and row and row['tags']:
         conn.close()
         return row['tags'], row['steam_score']
 
@@ -125,7 +129,8 @@ def get_game_data(appid):
     else:
         steam_score = 5.0
 
-    c.execute("UPDATE games SET tags = ?, steam_score = ? WHERE appid = ?", (tags, steam_score, appid))
+    c.execute("UPDATE games SET tags = ?, steam_score = ?, tags_updated = ? WHERE appid = ?",
+              (tags, steam_score, int(time.time()), appid))
     conn.commit()
     conn.close()
     return tags, steam_score
@@ -167,10 +172,11 @@ def is_100_percent_completed(appid):
 
             if all(a.get("achieved", 0) == 1 for a in achs):
                 c.execute("""
-                    UPDATE games
-                    SET achievements_completed = 1, finished = 1
-                    WHERE appid = ?
-                """, (appid,))
+                          UPDATE games
+                          SET achievements_completed = 1,
+                              finished               = 1
+                          WHERE appid = ?
+                          """, (appid,))
                 conn.commit()
                 conn.close()
                 return True
@@ -179,3 +185,44 @@ def is_100_percent_completed(appid):
 
     conn.close()
     return False
+
+
+def sync_game_tags():
+    """Fetch and update tags for all games that haven't been updated in the last week."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get games that need tag updates (older than 1 week or never updated)
+    one_week_ago = int(time.time()) - 604800
+    c.execute("""
+              SELECT appid
+              FROM games
+              WHERE tags_updated IS NULL
+                 OR tags_updated < ?
+              """, (one_week_ago,))
+
+    appids_to_update = [row['appid'] for row in c.fetchall()]
+
+    if not appids_to_update:
+        conn.close()
+        return
+
+    total_games = len(appids_to_update)
+    print(f"Updating tags for {total_games} games...")
+
+    for appid in tqdm(
+            appids_to_update,
+            desc="🎮 Fetching tags",
+            unit="game",
+            ncols=100,
+            bar_format='{desc}: {percentage:.1f}% |{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+            colour='cyan'
+    ):
+        try:
+            # This will fetch and update tags if needed
+            get_game_data(appid, force_refresh=True)
+        except Exception as e:
+            tqdm.write(f"Failed to update tags for appid {appid}: {e}")
+
+    print("Tag sync complete!")
+    conn.close()
