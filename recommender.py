@@ -3,6 +3,19 @@ import time
 from config import GAMES_PER_CATEGORY, CHILL_TAGS
 
 
+ def extract_tags(tag_str):
+    """Extracts tag names from a string containing 'tag:weight' tokens."""
+    if not tag_str:
+        return set()
+    tags = set()
+    for token in tag_str.split():
+        if ":" in token:
+            tags.add(token.split(":", 1)[0])
+        else:
+            tags.add(token)
+    return tags
+
+
 def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated_start_idx):
     """
     Build a human-readable explanation for why a game was recommended.
@@ -10,7 +23,7 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     """
     reasons = []
 
-    cand_tags = set(candidate.get('tags', '').split())
+    cand_tags = extract_tags(candidate.get('tags', ''))
     steam_score = candidate.get('steam_score')
     difficulty = candidate.get('difficulty', 'Easy')
     rating = candidate.get('rating', 0)
@@ -22,7 +35,7 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     for rg in rated_db_games:
         if rg['rating'] < 5:
             continue
-        rg_tags = set(rg.get('tags', '').split())
+        rg_tags = extract_tags(rg.get('tags', ''))
         overlap = cand_tags & rg_tags
         if len(overlap) >= 2:
             similar_to.append((rg['name'], rg['rating'], len(overlap)))
@@ -59,7 +72,7 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     liked_tags = {}
     for rg in rated_db_games:
         if rg['rating'] >= 7:
-            for t in rg.get('tags', '').split():
+            for t in extract_tags(rg.get('tags', '')):
                 liked_tags[t] = liked_tags.get(t, 0) + 1
 
     highlight_tags = [t for t in cand_tags if liked_tags.get(t, 0) >= 2]
@@ -146,7 +159,7 @@ def build_persistent_sections(df_backlog, rated_db_games, vectorizer, tfidf, rat
     def is_chill(tag_str):
         if not tag_str:
             return False
-        tokens = {t.lower() for t in tag_str.split()}
+        tokens = extract_tags(tag_str)
         return bool(tokens & CHILL_TAGS)
 
     chill_mask = df_backlog['tags'].apply(is_chill)

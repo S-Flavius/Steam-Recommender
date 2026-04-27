@@ -40,6 +40,10 @@ def init_db():
         ('temp_rating', 'INTEGER DEFAULT NULL'),
         ('temp_rating_until', 'INTEGER DEFAULT NULL'),
         ('tags_updated', 'INTEGER DEFAULT NULL'),
+        ('achievements_total', 'INTEGER DEFAULT 0'),
+        ('achievements_unlocked', 'INTEGER DEFAULT 0'),
+        ('developer', 'TEXT DEFAULT NULL'),
+        ('publisher', 'TEXT DEFAULT NULL'),
     ]:
         try:
             c.execute(f'ALTER TABLE games ADD COLUMN {column} {definition}')
