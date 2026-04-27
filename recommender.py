@@ -3,7 +3,7 @@ import time
 from config import GAMES_PER_CATEGORY, CHILL_TAGS
 
 
- def extract_tags(tag_str):
+def extract_tags(tag_str):
     """Extracts tag names from a string containing 'tag:weight' tokens."""
     if not tag_str:
         return set()
