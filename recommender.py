@@ -131,6 +131,7 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
                 <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({r['appid']}, 'up_next', this)">Next</button>
                 <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({r['appid']}, 'ignore', this)">Ignore</button>
                 <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({r['appid']}, 'ban', this)">Ban</button>
+                <a href="https://store.steampowered.com/app/{r['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
             </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{r['appid']}/header.jpg">
             <div style="padding: 2px;">

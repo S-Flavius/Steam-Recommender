@@ -90,6 +90,7 @@ def get_carousel_html(conn):
                 <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({g['appid']}, 'up_next', this)">Next</button>
                 <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
                 <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
+                <a href="https://store.steampowered.com/app/{g['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
             </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{g['appid']}/header.jpg">
             <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start; justify-content: center;">

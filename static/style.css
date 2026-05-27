@@ -119,6 +119,7 @@ h1 {
 .btn-up-next:hover { background: #ff6b35; }
 .btn-ban:hover { background: var(--danger); }
 .btn-ignore:hover { background: var(--warning); color: #000; }
+.btn-steam:hover { background: #1b2838; color: #66c0f4; border-color: #66c0f4; }
 
 .btn-submit {
     display: block;
