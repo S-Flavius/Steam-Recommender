@@ -39,6 +39,10 @@ def get_carousel_html(conn):
         rating = g['rating'] or 0
         flag = " (Finished)" if g['finished'] else ""
         
+        up_next_badge = ""
+        if g['temp_rating'] and g['temp_rating_until'] > now:
+             up_next_badge = '<span class="up-next-badge" style="margin-left: 5px; vertical-align: middle;">Next</span>'
+
         # Determine which finish button to show
         if not g['finished']:
             finish_btn = f'<button class="icon-btn btn-finish" title="Finish" onclick="finishGame({g["appid"]}, this)">Done</button>'
@@ -56,13 +60,15 @@ def get_carousel_html(conn):
             </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{g['appid']}/header.jpg">
             <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start; justify-content: center;">
-                <b style="color: white; font-size: 0.85em; line-height: 1.2;">{g['name']}{flag}</b>
+                <b style="color: white; font-size: 0.85em; line-height: 1.2;">{g['name']}{flag}{up_next_badge}</b>
             </div>
             <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px;">
                 <div style="display:flex; align-items:center; gap:6px;">
                     <input type="range" class="rate-slider" data-appid="{g['appid']}" min="0" max="10" value="{rating}" 
                            style="flex:1; accent-color:var(--accent); cursor: pointer; height: 4px;"
-                           oninput="this.nextElementSibling.innerText = this.value">
+                           autocomplete="off"
+                           oninput="this.nextElementSibling.innerText = this.value"
+                           onchange="rateCard({g['appid']}, this)">
                     <span style="font-weight: 800; color: var(--accent); min-width: 14px; font-size: 0.8em;">{rating}</span>
                 </div>
             </div>

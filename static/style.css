@@ -204,6 +204,18 @@ h1 {
     border-radius: 4px;
 }
 
+.up-next-badge {
+    background: var(--accent);
+    color: white;
+    font-size: 0.7em;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
 .loading-text {
     text-align: center;
     display: none;

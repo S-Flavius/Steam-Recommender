@@ -20,6 +20,12 @@ init_db()
 _sync_lock = threading.Lock()
 _sync_in_progress = False
 
+# Background training tracking
+_train_lock = threading.Lock()
+_train_thread = None
+_stop_event = threading.Event()
+_last_train_results = None
+
 
 def _background_sync():
     """Run sync tasks in the background."""
@@ -105,6 +111,8 @@ def update_game():
                          rating   = ?
                      WHERE appid = ?
                      """, (rating, appid))
+        conn.commit()
+        # No more manual triggers here, frontend will call /recommend
 
     elif action == 'unfinish':
         conn.execute("""
@@ -112,6 +120,8 @@ def update_game():
                      SET finished = 0
                      WHERE appid = ?
                      """, (appid,))
+        conn.commit()
+        # No more manual triggers here, frontend will call /recommend
 
     elif action == 'rate':
         rating = data.get('value', 0)
@@ -119,16 +129,23 @@ def update_game():
                      (rating, appid))
 
     elif action == 'up_next':
-        # Set temporary rating of 10 that expires in X days
-        up_next_days = int(get_metadata('UP_NEXT_DURATION_DAYS', UP_NEXT_DURATION_DAYS))
-        duration = up_next_days * 24 * 60 * 60
-        conn.execute("""
-                     UPDATE games
-                     SET temp_rating       = 10,
-                         temp_rating_until = ?,
-                         ignore_until      = 0
-                     WHERE appid = ?
-                     """, (now + duration, appid))
+        # Toggle Up Next: if already active, clear it; otherwise set it.
+        row = conn.execute("SELECT temp_rating, temp_rating_until FROM games WHERE appid = ?", (appid,)).fetchone()
+        is_active = row and row['temp_rating'] is not None and row['temp_rating_until'] > now
+        
+        if is_active:
+            conn.execute("UPDATE games SET temp_rating = NULL, temp_rating_until = NULL WHERE appid = ?", (appid,))
+        else:
+            up_next_days = int(get_metadata('UP_NEXT_DURATION_DAYS', UP_NEXT_DURATION_DAYS))
+            duration = up_next_days * 24 * 60 * 60
+            conn.execute("""
+                         UPDATE games
+                         SET temp_rating       = 10,
+                             temp_rating_until = ?,
+                             ignore_until      = 0
+                         WHERE appid = ?
+                         """, (now + duration, appid))
+        conn.commit()
 
     conn.commit()
     unrated_count = get_unrated_count(conn)
@@ -161,33 +178,84 @@ def settings():
     return jsonify({"success": True})
 
 
-@app.route('/recommend', methods=['POST'])
-def recommend():
-    """Generate ML-based game recommendations."""
-    session_ratings = request.json
-    conn = get_db()
+def _background_train(show_finished, stop_event):
+    """Run recommendation generation in the background."""
+    global _last_train_results
 
-    # 1. Save ratings from the carousel
-    for aid, score in session_ratings.items():
-        conn.execute("UPDATE games SET rating = ?, temp_rating = NULL, temp_rating_until = NULL WHERE appid = ?",
-                     (score, aid))
-    conn.commit()
+    try:
+        conn = get_db()
+        res_html = build_recommendations_html(conn, show_finished=bool(show_finished), stop_event=stop_event)
+        
+        if stop_event.is_set() or res_html is None:
+            conn.close()
+            return
 
-    show_finished = int(get_metadata('SHOW_FINISHED', '0'))
-    res_html = build_recommendations_html(conn, show_finished=bool(show_finished))
-    
-    unrated_count = get_unrated_count(conn)
-    carousel_html = get_carousel_html(conn)
-    conn.close()
-    
-    if res_html is None:
-        return jsonify({
-            "results_html": "<h2>Please rate some games first!</h2>",
+        unrated_count = get_unrated_count(conn)
+        carousel_html = get_carousel_html(conn)
+        conn.close()
+
+        _last_train_results = {
+            "results_html": res_html,
             "carousel_html": carousel_html,
             "unrated_count": unrated_count
-        })
+        }
+    except Exception as e:
+        print(f"Training error: {e}")
+    finally:
+        pass
 
-    return jsonify({"results_html": res_html, "carousel_html": carousel_html, "unrated_count": unrated_count})
+
+@app.route('/recommend', methods=['POST'])
+def recommend():
+    """Trigger background re-training, canceling any existing one."""
+    global _train_thread, _stop_event, _last_train_results
+    
+    session_ratings = request.json
+    
+    # Persist ratings IMMEDIATELY so they aren't lost if training is cancelled/restarted
+    if session_ratings:
+        conn = get_db()
+        for aid, score in session_ratings.items():
+            # Only update if the rating has actually changed or if it's not a temp-rated game
+            # To avoid clearing temp_rating accidentally
+            conn.execute("""
+                UPDATE games 
+                SET rating = ?, 
+                    temp_rating = CASE WHEN rating = ? THEN temp_rating ELSE NULL END,
+                    temp_rating_until = CASE WHEN rating = ? THEN temp_rating_until ELSE NULL END
+                WHERE appid = ?
+            """, (score, score, score, aid))
+        conn.commit()
+        conn.close()
+
+    with _train_lock:
+        _stop_event.set()
+        _stop_event = threading.Event()
+        _last_train_results = None
+        
+        show_finished = int(get_metadata('SHOW_FINISHED', '0'))
+        
+        _train_thread = threading.Thread(
+            target=_background_train, 
+            args=(show_finished, _stop_event), 
+            daemon=True
+        )
+        _train_thread.start()
+    
+    return jsonify({"success": True, "message": "Training started"})
+
+
+@app.route('/training_status')
+def training_status():
+    """Check background training status."""
+    with _train_lock:
+        if _train_thread and _train_thread.is_alive() and not _stop_event.is_set():
+            return jsonify({"status": "in_progress"})
+        
+        if _last_train_results:
+            return jsonify({"status": "complete", "data": _last_train_results})
+        
+        return jsonify({"status": "idle"})
 
 
 if __name__ == "__main__":

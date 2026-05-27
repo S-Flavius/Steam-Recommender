@@ -83,9 +83,13 @@ def get_game_weighted_tags(conn, appid):
     return tags, weights
 
 
-def generate_recommendations(conn):
+def generate_recommendations(conn, stop_event=None):
     """Generate ML-based game recommendations."""
     now = int(time.time())
+
+    def check_stop():
+        if stop_event and stop_event.is_set():
+            raise InterruptedError("Training cancelled")
 
     # 2. Rated games (profile)
     # Include games with either a permanent rating or an active temporary rating
@@ -140,6 +144,7 @@ def generate_recommendations(conn):
 
     # Profile building
     for g in rated_db_games:
+        check_stop()
         tags, weights = get_game_weighted_tags(conn, g['appid'])
         if not tags:
             # Fallback for games with missing normalized tags but having the tags string
@@ -195,6 +200,7 @@ def generate_recommendations(conn):
 
     # Backlog prep
     for g in backlog + finished_candidates:
+        check_stop()
         tags, weights = get_game_weighted_tags(conn, g['appid'])
         if not tags:
             tags_dict = extract_tags_with_counts(g.get('tags', ''))
@@ -218,6 +224,7 @@ def generate_recommendations(conn):
         all_tags_list.append(" ".join(weighted_tags))
 
     # Vectorize
+    check_stop()
     tfidf_matrix = vectorizer.fit_transform(all_tags_list)
     
     rated_count = len(rated_db_games)
@@ -243,6 +250,7 @@ def generate_recommendations(conn):
         user_profile_vector = np.mean(weighted_profile_rows, axis=0).reshape(1, -1)
     
     # Calculate similarity
+    check_stop()
     similarities = cosine_similarity(user_profile_vector, candidate_matrix)[0]
     
     # Apply a small boost for games the user has already played (replay value)
@@ -265,9 +273,12 @@ def generate_recommendations(conn):
     return df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags
 
 
-def build_recommendations_html(conn, show_finished=False):
+def build_recommendations_html(conn, show_finished=False, stop_event=None):
     """Complete pipeline to generate recommendation HTML."""
-    df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags = generate_recommendations(conn)
+    try:
+        df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags = generate_recommendations(conn, stop_event=stop_event)
+    except InterruptedError:
+        return None
     
     if df_backlog is None:
         return "<h2>Please rate some games first!</h2>"
@@ -287,9 +298,11 @@ def build_recommendations_html(conn, show_finished=False):
         actual_num_clusters = max(1, min(num_categories, len(remaining)))
         
         # Re-vectorize remaining to get better clusters
+        if stop_event and stop_event.is_set(): return None
         rem_tags = [" ".join(extract_tags(t)) for t in remaining['tags']]
         rem_tfidf = vectorizer.transform(rem_tags)
         
+        if stop_event and stop_event.is_set(): return None
         kmeans = KMeans(n_clusters=actual_num_clusters, n_init=10, random_state=42)
         remaining['cluster'] = kmeans.fit_predict(rem_tfidf)
         
@@ -367,7 +380,8 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
 
     # 4. You've played it before but never finished
     if rating > 0 and not finished:
-        if candidate.get('temp_rating'):
+        now = int(time.time())
+        if candidate.get('temp_rating') and candidate.get('temp_rating_until', 0) > now:
             reasons.append("Marked as <b>Up Next</b>")
         else:
             reasons.append(f"You played this (rated {rating}/10) but never finished it")
@@ -412,6 +426,11 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
     else:
         finish_btn = f'<button class="icon-btn btn-unfinish" title="Unfinish" onclick="unfinishGame({r["appid"]}, this)">Revive</button>'
 
+    up_next_badge = ""
+    now = int(time.time())
+    if r.get('temp_rating') and r.get('temp_rating_until', 0) > now:
+        up_next_badge = '<span class="up-next-badge" title="High priority for recommendations">Up Next</span>'
+
     rating_val = int(r['rating'] or 0)
     return f'''
         <div class="game-card" data-appid="{r['appid']}">
@@ -431,11 +450,13 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
                     <span class="match-score" style="font-size: 0.75em; opacity: 0.8;">
                         {round(r['match_score'], 1)}% Match
                     </span>
+                    {up_next_badge}
                 </div>
                 <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px; margin-bottom: 8px;">
                     <div style="display:flex; align-items:center; gap:6px;">
                         <input type="range" min="0" max="10" value="{rating_val}"
                                style="flex:1; accent-color:var(--accent); cursor: pointer; height: 4px;"
+                               autocomplete="off"
                                onchange="rateCard({r['appid']}, this)">
                         <span style="font-weight:800; color:var(--accent); min-width:14px; font-size: 0.8em;">{rating_val}</span>
                     </div>

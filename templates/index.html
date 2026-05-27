@@ -19,7 +19,6 @@
     
     <div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
     
-    <button class="btn-submit" id="trainBtn" onclick="generateRecommendations()">Train AI & Re-Cluster</button>
     <div class="loading-text" id="loading">AI is crunching the data... Please wait...</div>
     
     <div class="board" id="results">{{ results_html | safe }}</div>
@@ -71,6 +70,20 @@
 </div>
 
 <script>
+    window.onload = function() {
+        document.querySelectorAll('input[type="range"]').forEach(slider => {
+            // Some browsers cache the value across refreshes even with autocomplete="off"
+            // We force it back to the value defined in the HTML attribute
+            const initialValue = slider.getAttribute('value');
+            if (initialValue !== null) {
+                slider.value = initialValue;
+                if (slider.nextElementSibling && slider.nextElementSibling.tagName === 'SPAN') {
+                    slider.nextElementSibling.textContent = initialValue;
+                }
+            }
+        });
+    };
+
     function updateGame(appid, action, btn, value = null) {
         let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
         cards.forEach(card => card.style.opacity = '0.5');
@@ -91,8 +104,8 @@
                 
                 // If it was "Up Next", we should probably trigger a re-recommendation
                 // because it needs to move from carousel/somewhere to Top Games
-                if (action === 'up_next') {
-                    setTimeout(() => generateRecommendations(), 500);
+                if (action === 'up_next' || action === 'ignore' || action === 'ban' || action === 'unban' || action === 'finish') {
+                    generateRecommendations();
                 }
 
                 // Update count from server
@@ -120,6 +133,10 @@
                 const countEl = document.getElementById('unratedCount');
                 if (countEl && data.unrated_count !== undefined) {
                     countEl.textContent = `(${data.unrated_count} left to rate)`;
+                }
+
+                if (action === 'rate') {
+                    generateRecommendations();
                 }
             }
         });
@@ -159,11 +176,6 @@
         let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
         cards.forEach(card => card.style.opacity = '0.5');
         updateGame(appid, 'unfinish', btn);
-        // We might want to reload recommendations to see it back in backlog,
-        // or just let the user re-train. For now, just show it's done.
-        setTimeout(() => {
-            generateRecommendations();
-        }, 500);
     }
 
     function toggleWhy(btn) {
@@ -227,46 +239,71 @@
         });
     }
 
+    let trainingTimer = null;
+
     function generateRecommendations() {
-        const trainBtn = document.getElementById('trainBtn');
         const loading = document.getElementById('loading');
         const results = document.getElementById('results');
 
-        trainBtn.disabled = true;
+        if (trainingTimer) clearTimeout(trainingTimer);
         loading.style.display = 'block';
-        results.innerHTML = '';
 
-        let ratings = {};
-        document.querySelectorAll('.rate-slider').forEach(s => {
-            let val = parseInt(s.value);
-            if (val > 0) {
-                ratings[s.getAttribute('data-appid')] = val;
-            }
-        });
+        trainingTimer = setTimeout(() => {
+            let ratings = {};
+            document.querySelectorAll('.rate-slider').forEach(s => {
+                let val = parseInt(s.value);
+                if (val > 0) {
+                    ratings[s.getAttribute('data-appid')] = val;
+                }
+            });
 
-        fetch('/recommend', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(ratings)
-        })
+            fetch('/recommend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(ratings)
+            })
+                .then(res => res.json())
+                .then((data) => {
+                    if (data.success) {
+                        pollTrainingStatus();
+                    } else {
+                        loading.style.display = 'none';
+                    }
+                })
+                .catch(err => {
+                    console.error("AI Training Trigger Failed:", err);
+                    loading.style.display = 'none';
+                });
+        }, 1000); // Debounce training trigger
+    }
+
+    function pollTrainingStatus() {
+        fetch('/training_status')
             .then(res => res.json())
-            .then((data) => {
-                trainBtn.disabled = false;
-                loading.style.display = 'none';
-                results.innerHTML = data.results_html;
-                document.getElementById('carousel').innerHTML = data.carousel_html;
-                
-                // Update count
-                const countEl = document.getElementById('unratedCount');
-                if (countEl && data.unrated_count !== undefined) {
-                    countEl.textContent = `(${data.unrated_count} left to rate)`;
+            .then(data => {
+                if (data.status === 'complete') {
+                    const loading = document.getElementById('loading');
+                    const results = document.getElementById('results');
+
+                    loading.style.display = 'none';
+                    results.innerHTML = data.data.results_html;
+                    document.getElementById('carousel').innerHTML = data.data.carousel_html;
+                    
+                    // Update count
+                    const countEl = document.getElementById('unratedCount');
+                    if (countEl && data.data.unrated_count !== undefined) {
+                        countEl.textContent = `(${data.data.unrated_count} left to rate)`;
+                    }
+                } else if (data.status === 'in_progress') {
+                    setTimeout(pollTrainingStatus, 1000);
+                } else {
+                    // Idle or Error
+                    document.getElementById('loading').style.display = 'none';
                 }
             })
             .catch(err => {
-                console.error("AI Training Failed:", err);
-                trainBtn.disabled = false;
-                loading.style.display = 'none';
-                alert("Something went wrong with the AI training.");
+                console.error("Polling status failed:", err);
+                setTimeout(pollTrainingStatus, 2000);
             });
     }
 </script>
