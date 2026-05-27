@@ -14,4 +14,7 @@ uv.lock
 
 # Pycharm
 .idea/
+/.junie/*
 
+# Node
+/node_modules/*

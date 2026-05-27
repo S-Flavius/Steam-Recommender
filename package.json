@@ -1,0 +1,17 @@
+{
+  "name": "steam_recommender_gemini_python",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build:css": "sass static/style.scss static/style.css",
+    "watch:css": "sass --watch static/style.scss static/style.css"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.33.0",
+  "devDependencies": {
+    "sass": "^1.100.0"
+  }
+}

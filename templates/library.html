@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Library - Steam Recommender{% endblock %}
+
+{% block content %}
+<div id="libraryView" class="view">
+    <header class="view-header">
+        <div>
+            <h1>Library</h1>
+            <p class="text-dim">Manage your entire Steam collection</p>
+        </div>
+        <div class="header-actions">
+            <div class="search-box">
+                <i data-lucide="search"></i>
+                <input type="text" id="librarySearch" placeholder="Search games..." oninput="filterLibrary()">
+            </div>
+        </div>
+    </header>
+    
+    <div class="library-controls">
+        <div class="filter-group">
+            <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
+            <button class="filter-btn" data-filter="unrated" onclick="setFilter('unrated')">Unrated</button>
+            <button class="filter-btn" data-filter="rated" onclick="setFilter('rated')">Rated</button>
+            <button class="filter-btn" data-filter="finished" onclick="setFilter('finished')">Finished</button>
+        </div>
+        <div class="sort-group">
+            <label>Sort by:</label>
+            <select id="librarySort" onchange="filterLibrary()">
+                <option value="name">Name</option>
+                <option value="playtime">Playtime</option>
+                <option value="rating">Rating</option>
+                <option value="last_played">Recently Played</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="library-grid" id="libraryGrid">
+        <div class="loading-spinner"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let libraryData = [];
+    let currentFilter = 'all';
+
+    function loadLibrary() {
+        const grid = document.getElementById('libraryGrid');
+        grid.innerHTML = '<div class="loading-spinner"></div>';
+        
+        fetch('/library_data')
+            .then(res => res.json())
+            .then(data => {
+                libraryData = data;
+                filterLibrary();
+            });
+    }
+
+    function setFilter(filter) {
+        currentFilter = filter;
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.getAttribute('data-filter') === filter);
+        });
+        filterLibrary();
+    }
+
+    function filterLibrary() {
+        const search = document.getElementById('librarySearch').value.toLowerCase();
+        const sort = document.getElementById('librarySort').value;
+        const grid = document.getElementById('libraryGrid');
+        
+        let filtered = libraryData.filter(g => {
+            const name = (g.name || "").toLowerCase();
+            const matchesSearch = name.includes(search);
+            if (currentFilter === 'unrated') return matchesSearch && g.rating === 0 && !g.finished;
+            if (currentFilter === 'rated') return matchesSearch && g.rating > 0;
+            if (currentFilter === 'finished') return matchesSearch && g.finished;
+            return matchesSearch;
+        });
+
+        filtered.sort((a, b) => {
+            const nameA = a.name || "";
+            const nameB = b.name || "";
+            if (sort === 'name') return nameA.localeCompare(nameB);
+            if (sort === 'playtime') return (b.playtime || 0) - (a.playtime || 0);
+            if (sort === 'rating') return (b.rating || 0) - (a.rating || 0);
+            if (sort === 'last_played') return (b.last_played || 0) - (a.last_played || 0);
+            return 0;
+        });
+
+        grid.innerHTML = filtered.map(g => `
+            <div class="game-card" data-appid="${g.appid}">
+                <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${g.appid}/header.jpg">
+                <div class="card-content">
+                    <div class="game-title">${g.name || 'Unknown Game'}</div>
+                    <div class="slider-container" style="margin-top: 10px;">
+                        <div class="slider-wrapper">
+                            <input type="range" class="rate-slider" min="0" max="10" value="${g.rating || 0}" 
+                                   onchange="rateCard(${g.appid}, this)">
+                            <span class="rating-value">${g.rating || 0}</span>
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <a href="https://store.steampowered.com/app/${g.appid}" target="_blank" class="icon-btn btn-steam" title="Steam Page">
+                            <i data-lucide="external-link" style="width: 14px; height: 14px;"></i>
+                        </a>
+                        ${g.finished ? 
+                            `<button class="icon-btn btn-unfinish" title="Unfinish" onclick="unfinishGame(${g.appid}, this)">Revive</button>` :
+                            `<button class="icon-btn btn-finish" title="Finish" onclick="finishGame(${g.appid}, this)">Done</button>`
+                        }
+                    </div>
+                </div>
+            </div>
+        `).join('');
+        
+        lucide.createIcons();
+    }
+
+    loadLibrary();
+</script>
+{% endblock %}

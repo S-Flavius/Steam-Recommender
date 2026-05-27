@@ -21,9 +21,19 @@ An AI-powered game recommendation system for your Steam backlog. Uses TF-IDF and
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.14+ (or 3.8+)
+- [uv](https://github.com/astral-sh/uv) (recommended) or pip
+- [pnpm](https://pnpm.io/) (for styling)
 - Steam API key
 - Steam account with public game library
+
+### Tech Stack Modernizations
+- **Backend**: [SQLModel](https://sqlmodel.tiangolo.com/) for type-safe database interactions (replacing raw SQLite).
+- **Frontend**: 
+  - [HTMX](https://htmx.org/) for seamless server-side updates and reduced JavaScript.
+  - [Alpine.js](https://alpinejs.dev/) for lightweight client-side state management (modals, toggles).
+  - [SCSS](https://sass-lang.com/) for advanced styling.
+- **Package Management**: [uv](https://github.com/astral-sh/uv) for Python and [pnpm](https://pnpm.io/) for Node.js.
 
 ### Installation
 
@@ -35,10 +45,18 @@ An AI-powered game recommendation system for your Steam backlog. Uses TF-IDF and
 
 2. Install dependencies:
    ```bash
-   pip install flask pandas numpy scikit-learn requests python-dotenv
+   uv sync
+   # OR
+   pip install -r requirements.txt
    ```
 
-3. Create a `.env` file with your credentials:
+3. Install frontend dependencies and build CSS:
+   ```bash
+   pnpm install
+   pnpm run build:css
+   ```
+
+4. Create a `.env` file with your credentials:
    ```
    STEAM_API_KEY=your_steam_api_key_here
    STEAM_ID=your_steam_id_here
@@ -76,6 +94,15 @@ An AI-powered game recommendation system for your Steam backlog. Uses TF-IDF and
    - **Ban**: Permanently hide
    - **Ignore**: Hide for 30 days
 
+## Testing
+
+Run tests using `pytest`:
+```bash
+uv run pytest
+# OR
+$env:PYTHONPATH="."; pytest
+```
+
 ## Project Structure
 
 ```
@@ -86,10 +113,18 @@ steam-recommender/
 ├── sync.py             # Steam API and external data sync
 ├── recommender.py      # ML recommendation engine & core logic
 ├── ui_helpers.py       # HTML components and UI logic
+├── tests/              # Unit tests
+│   └── test_app.py     # App and caching logic tests
 ├── templates/
-│   └── index.html      # Main UI template
+│   ├── base.html       # Shared layout template
+│   ├── home.html       # Recommendations view
+│   ├── library.html    # Library management view
+│   └── stats.html      # Insights and stats view
 ├── static/
-│   └── style.css       # Styles
+│   ├── style.scss      # SCSS source
+│   └── style.css       # Compiled CSS
+├── package.json        # Node.js dependencies and scripts
+├── pnpm-lock.yaml      # pnpm lockfile
 ├── .env                # Your API keys (not committed)
 └── {STEAM_ID}.games.db # SQLite database (auto-created)
 ```

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Steam Recommender{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+</head>
+<body x-data="{ 
+    modalOpen: false, 
+    syncing: false,
+    unratedCount: {{ unrated_count if unrated_count is defined else 0 }},
+    closeModal() { this.modalOpen = false },
+    openModal() { 
+        this.modalOpen = true;
+        fetch('/settings').then(res => res.json()).then(data => {
+            console.log('Settings data:', data);
+            for (const key in data) {
+                const el = document.getElementById('conf_' + key);
+                if (el) {
+                    el.value = data[key];
+                    console.log('Set', key, 'to', data[key]);
+                } else {
+                    console.log('Element not found: conf_' + key);
+                }
+            }
+        }).catch(err => console.error('Fetch settings failed:', err));
+    }
+}">
+<div class="app-layout">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <i data-lucide="sparkles"></i>
+                <span>Steam recommender</span>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="{{ url_for('index') }}" class="nav-item {% if request.endpoint == 'index' %}active{% endif %}">
+                <i data-lucide="layout-dashboard"></i>
+                <span>Home</span>
+            </a>
+            <a href="{{ url_for('library') }}" class="nav-item {% if request.endpoint == 'library' %}active{% endif %}">
+                <i data-lucide="library"></i>
+                <span>Library</span>
+            </a>
+            <a href="{{ url_for('stats') }}" class="nav-item {% if request.endpoint == 'stats' %}active{% endif %}">
+                <i data-lucide="bar-chart-3"></i>
+                <span>Stats</span>
+            </a>
+            <div class="nav-spacer"></div>
+            <button class="nav-item" 
+                    :disabled="syncing"
+                    @click="syncing = true; fetch('/sync_steam', {method: 'POST'}).then(() => setTimeout(() => { syncing = false; location.reload() }, 3000))"
+                    id="syncBtn">
+                <i data-lucide="refresh-cw" :class="syncing ? 'spin' : ''"></i>
+                <span x-text="syncing ? 'Syncing...' : 'Sync Steam'">Sync Steam</span>
+            </button>
+            <button class="nav-item" @click="openModal()">
+                <i data-lucide="settings"></i>
+                <span>Settings</span>
+            </button>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="sync-status">
+                <div class="status-indicator"></div>
+                <span id="syncText">Library Synced</span>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+</div>
+
+<!-- Settings Modal -->
+<div id="settingsModal" class="modal" x-show="modalOpen" x-cloak @click.self="closeModal()">
+    <div class="modal-content" @click.away="closeModal()">
+        <div class="modal-header">
+            <h3>Settings</h3>
+            <span class="close" @click="closeModal()">&times;</span>
+        </div>
+        <div class="settings-grid">
+            <label>Steam ID</label>
+            <input type="text" id="conf_STEAM_ID">
+            
+            <label>CEDB User ID</label>
+            <input type="text" id="conf_CEDB_USER_ID">
+            
+            <label>No. of Categories</label>
+            <input type="number" id="conf_NUM_CATEGORIES">
+            
+            <label>Games / Category</label>
+            <input type="number" id="conf_GAMES_PER_CATEGORY">
+            
+            <label>Min Playtime (m)</label>
+            <input type="number" id="conf_MIN_PLAYTIME">
+            
+            <label>Carousel Size</label>
+            <input type="number" id="conf_CAROUSEL_SIZE">
+            
+            <label>Ignore (days)</label>
+            <input type="number" id="conf_IGNORE_DURATION_DAYS">
+            
+            <label>Up Next (days)</label>
+            <input type="number" id="conf_UP_NEXT_DURATION_DAYS">
+            
+            <label>Show Finished</label>
+            <select id="conf_SHOW_FINISHED">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+            </select>
+        </div>
+        <div class="modal-footer">
+            <button class="why-toggle" style="border-color: var(--text-dim); color: var(--text-dim);" @click="closeModal()">Cancel</button>
+            <button class="why-toggle" style="background: var(--accent); color: white;" onclick="saveSettings()">Save & Reload</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Shared Functions
+    function updateGame(appid, action, btn, value = null) {
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        cards.forEach(card => card.style.opacity = '0.5');
+
+        const payload = {appid: appid, action: action};
+        if (value !== null) payload.value = value;
+
+        fetch('/update_game', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        }).then(res => {
+            if (!res.ok) throw new Error('Network response was not ok');
+            return res.json();
+        }).then(data => {
+            if (!data.success) {
+                cards.forEach(card => card.style.opacity = '1');
+                alert('Update failed: ' + (data.error || 'Unknown error'));
+                return;
+            }
+
+            if (action !== 'rate' && action !== 'unfinish') {
+                cards.forEach(card => {
+                    card.style.opacity = '0';
+                    setTimeout(() => card.remove(), 300);
+                });
+                
+                if (action === 'up_next' || action === 'ignore' || action === 'ban' || action === 'unban' || action === 'finish') {
+                    if (typeof generateRecommendations === 'function') generateRecommendations();
+                }
+            } else {
+                cards.forEach(card => {
+                    card.style.opacity = '1';
+                    if (action === 'rate' && value !== null) {
+                        const slider = card.querySelector('.rate-slider') || card.querySelector('input[type="range"]');
+                        if (slider) {
+                            slider.value = value;
+                            const valSpan = slider.parentElement.querySelector('.rating-value');
+                            if (valSpan) valSpan.textContent = value;
+                        }
+                    }
+                });
+                
+                if (action === 'rate') {
+                    if (typeof generateRecommendations === 'function') generateRecommendations();
+                }
+            }
+
+            // Sync unrated count globally
+            if (data.unrated_count !== undefined) {
+                if (window.Alpine) {
+                    const body = document.querySelector('body');
+                    Alpine.evaluate(body, `unratedCount = ${data.unrated_count}`);
+                }
+                const countEl = document.getElementById('unratedCount');
+                if (countEl) {
+                    const span = countEl.querySelector('span');
+                    if (span) span.textContent = `${data.unrated_count} left to rate`;
+                }
+            }
+            
+            // If we are in library view, we might need to refresh it
+            if (window.location.pathname === '/library' && typeof loadLibrary === 'function') {
+                setTimeout(loadLibrary, 500);
+            }
+        }).catch(err => {
+            console.error('Update failed:', err);
+            cards.forEach(card => card.style.opacity = '1');
+        });
+    }
+
+    function rateCard(appid, slider) {
+        const val = parseInt(slider.value);
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        cards.forEach(card => {
+            const s = card.querySelector('.rate-slider') || card.querySelector('input[type="range"]');
+            if (s) {
+                s.value = val;
+                const valSpan = s.parentElement.querySelector('.rating-value');
+                if (valSpan) valSpan.textContent = val;
+            }
+        });
+        updateGame(appid, 'rate', slider, val);
+    }
+
+    function finishGame(appid, btn) {
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        let ratingValue = 0;
+        for (let card of cards) {
+            let slider = card.querySelector('.rate-slider') || card.querySelector('input[type="range"]');
+            if (slider) {
+                ratingValue = parseInt(slider.value);
+                break;
+            }
+        }
+        updateGame(appid, 'finish', btn, ratingValue);
+    }
+
+    function unfinishGame(appid, btn) {
+        updateGame(appid, 'unfinish', btn);
+    }
+
+    function toggleWhy(btn) {
+        // Alpine handles this now, but keeping the function for backward compatibility or direct calls if any
+    }
+
+    function openModal() {
+        // Alpine handles this now
+    }
+
+    function closeModal() {
+        // Alpine handles this now
+    }
+
+    window.onclick = function(event) {
+        const modal = document.getElementById('settingsModal');
+        if (event.target == modal) closeModal();
+    }
+
+    function saveSettings() {
+        const keys = ['STEAM_ID', 'CEDB_USER_ID', 'NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS', 'SHOW_FINISHED'];
+        const payload = {};
+        keys.forEach(k => {
+            const el = document.getElementById('conf_' + k);
+            if (el) payload[k] = el.value;
+        });
+
+        fetch('/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        }).then(() => {
+            location.reload();
+        });
+    }
+
+    function syncLibrary() {
+        const btn = document.getElementById('syncBtn');
+        const icon = btn.querySelector('i');
+        const text = btn.querySelector('span');
+        
+        icon.classList.add('spin');
+        text.textContent = 'Syncing...';
+        btn.disabled = true;
+
+        fetch('/sync_steam', { method: 'POST' })
+            .then(() => {
+                setTimeout(() => {
+                    icon.classList.remove('spin');
+                    text.textContent = 'Sync Steam';
+                    btn.disabled = false;
+                    location.reload();
+                }, 3000);
+            });
+    }
+
+    lucide.createIcons();
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

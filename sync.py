@@ -5,7 +5,8 @@ import requests
 from tqdm import tqdm
 
 from config import STEAM_API_KEY, STEAM_ID, CEDB_USER_ID
-from database import get_db, get_metadata
+from database import engine, Game, Developer, Publisher, Tag, GameDeveloper, GamePublisher, GameTag, get_metadata, set_metadata, get_db
+from sqlmodel import Session, select, or_
 
 
 def sync_steam_library():
@@ -22,21 +23,22 @@ def sync_steam_library():
     res = requests.get(url, params=params)
     if res.status_code == 200:
         games = res.json().get("response", {}).get("games", [])
-        conn = get_db()
-        for g in games:
-            conn.execute('''
-                         INSERT INTO games (appid, name, playtime, last_played)
-                         VALUES (?, ?, ?, ?)
-                         ON CONFLICT(appid) DO UPDATE SET playtime    = excluded.playtime,
-                                                          last_played = excluded.last_played
-                         ''', (
-                g["appid"],
-                g.get("name", "Unknown"),
-                g.get("playtime_forever", 0),
-                g.get("rtime_last_played", 0),
-            ))
-        conn.commit()
-        conn.close()
+        with Session(engine) as session:
+            for g in games:
+                appid = g['appid']
+                name = g.get('name', 'Unknown')
+                playtime = g.get('playtime_forever', 0)
+                last_played = g.get('rtime_last_played', 0)
+                
+                game = session.get(Game, appid)
+                if game:
+                    game.playtime = playtime
+                    game.last_played = last_played
+                    game.name = name
+                else:
+                    game = Game(appid=appid, name=name, playtime=playtime, last_played=last_played)
+                session.add(game)
+            session.commit()
 
 
 def sync_cedb_difficulties():
@@ -45,34 +47,26 @@ def sync_cedb_difficulties():
     if not cedb_user_id:
         return
 
-    conn = get_db()
-    c = conn.cursor()
-
     # Check if we've synced recently (within 7 days)
-    c.execute("SELECT value FROM metadata WHERE key = 'last_cedb_sync'")
-    row = c.fetchone()
+    last_sync = get_metadata('last_cedb_sync')
     now = time.time()
-    if row and now - float(row['value']) < 604800:  # 7 days in seconds
-        conn.close()
+    if last_sync and now - float(last_sync) < 604800:  # 7 days in seconds
         return
 
     res = requests.get(f"https://cedb.me/api/user/{cedb_user_id}/games")
     if res.status_code == 200:
-        updates = []
-        for item in res.json():
-            game = item.get('game', {})
-            if str(game.get('platform')).lower() == 'steam':
-                updates.append((
-                    f"T{game.get('tier')} (Challenge)",
-                    int(game.get('platformId')),
-                ))
-        c.executemany("UPDATE games SET difficulty = ? WHERE appid = ?", updates)
-        c.execute(
-            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_cedb_sync', ?)",
-            (str(now),)
-        )
-        conn.commit()
-    conn.close()
+        with Session(engine) as session:
+            for item in res.json():
+                game_data = item.get('game', {})
+                if str(game_data.get('platform')).lower() == 'steam':
+                    appid = int(game_data.get('platformId'))
+                    diff = f"T{game_data.get('tier')} (Challenge)"
+                    game = session.get(Game, appid)
+                    if game:
+                        game.difficulty = diff
+                        session.add(game)
+            session.commit()
+        set_metadata('last_cedb_sync', str(now))
 
 
 def get_game_data(appid, force_refresh=False):
@@ -80,14 +74,10 @@ def get_game_data(appid, force_refresh=False):
     Fetch game tags and Steam score from SteamSpy.
     Returns cached data if available, otherwise fetches and stores it.
     """
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM games WHERE appid = ?", (appid,))
-    row = c.fetchone()
-
-    if not force_refresh and row and row['tags']:
-        conn.close()
-        return dict(row)
+    with Session(engine) as session:
+        game = session.get(Game, appid)
+        if not force_refresh and game and game.tags:
+            return game.dict()
 
     # Fetch from SteamSpy
     try:
@@ -120,25 +110,28 @@ def get_game_data(appid, force_refresh=False):
         steam_score = 5.0
 
     # Update main games table
-    c.execute("""
-        UPDATE games 
-        SET tags = ?, 
-            steam_score = ?, 
-            tags_updated = ?,
-            name = CASE WHEN name IS NULL OR name = 'Unknown' THEN ? ELSE name END,
-            developer = ?,
-            publisher = ?
-        WHERE appid = ?
-    """, (tags_str, steam_score, int(time.time()), name, developer_str, publisher_str, appid))
-
-    # Normalized storage
-    _update_normalized_data(c, appid, tag_list, developer_str, publisher_str)
-        
-    conn.commit()
-    c.execute("SELECT * FROM games WHERE appid = ?", (appid,))
-    updated_row = c.fetchone()
-    conn.close()
-    return dict(updated_row) if updated_row else {}
+    with Session(engine) as session:
+        game = session.get(Game, appid)
+        if game:
+            game.tags = tags_str
+            game.steam_score = steam_score
+            game.tags_updated = int(time.time())
+            if not game.name or game.name == 'Unknown':
+                game.name = name
+            game.developer = developer_str
+            game.publisher = publisher_str
+            session.add(game)
+            session.commit()
+            
+            # For normalized data, we still need a cursor-like helper or refactor it too
+            conn = get_db()
+            _update_normalized_data(conn.cursor(), appid, tag_list, developer_str, publisher_str)
+            conn.commit()
+            conn.close()
+            
+            session.refresh(game)
+            return game.dict()
+    return {}
 
 
 def _update_normalized_data(cursor, appid, tag_list, developer_str, publisher_str):
@@ -174,22 +167,16 @@ def _update_normalized_data(cursor, appid, tag_list, developer_str, publisher_st
 
 def is_100_percent_completed(appid):
     """Check if a game has 100% achievement completion via Steam API."""
-    conn = get_db()
-    c = conn.cursor()
+    with Session(engine) as session:
+        game = session.get(Game, appid)
+        if not game:
+            return False
 
-    c.execute(
-        "SELECT achievements_completed, finished, playtime FROM games WHERE appid = ?",
-        (appid,)
-    )
-    row = c.fetchone()
+        if game.achievements_completed or game.finished:
+            return True
 
-    if row and (row['achievements_completed'] or row['finished']):
-        conn.close()
-        return True
-
-    if row and row['playtime'] == 0:
-        conn.close()
-        return False
+        if game.playtime == 0:
+            return False
 
     params = {"appid": appid, "key": STEAM_API_KEY, "steamid": STEAM_ID}
 
@@ -203,65 +190,48 @@ def is_100_percent_completed(appid):
             achs = res["playerstats"].get("achievements", [])
 
             if not achs:
-                conn.close()
                 return False
 
             # Calculate achievement progress
             total = len(achs)
             unlocked = sum(1 for a in achs if a.get("achieved", 0) == 1)
+            completed = all(a.get("achieved", 0) == 1 for a in achs)
 
             # Update achievement counts
-            c.execute(
-                "UPDATE games SET achievements_total = ?, achievements_unlocked = ? WHERE appid = ?",
-                (total, unlocked, appid)
-            )
-            conn.commit()
-
-            if all(a.get("achieved", 0) == 1 for a in achs):
-                c.execute("""
-                    UPDATE games
-                    SET achievements_completed = 1, finished = 1
-                    WHERE appid = ?
-                """, (appid,))
-                conn.commit()
-                conn.close()
-                return True
+            with Session(engine) as session:
+                game = session.get(Game, appid)
+                if game:
+                    game.achievements_total = total
+                    game.achievements_unlocked = unlocked
+                    if completed:
+                        game.achievements_completed = True
+                        game.finished = True
+                    session.add(game)
+                    session.commit()
+            return completed
     except Exception:
         pass
 
-    conn.close()
     return False
 
 
 def sync_game_tags():
     """Fetch and update tags for all games that haven't been updated in the last week."""
-    conn = get_db()
-    c = conn.cursor()
-
     # Get games that need tag updates (older than 1 week, never updated, or missing developer column metadata, or empty tags)
     one_week_ago = int(time.time()) - 604800
-    try:
-        c.execute("""
-                  SELECT appid
-                  FROM games
-                  WHERE tags_updated IS NULL
-                     OR tags_updated < ?
-                     OR developer IS NULL
-                     OR tags = ''
-                  """, (one_week_ago,))
-    except Exception:
-        c.execute("""
-                  SELECT appid
-                  FROM games
-                  WHERE tags_updated IS NULL
-                     OR tags_updated < ?
-                     OR tags = ''
-                  """, (one_week_ago,))
-
-    appids_to_update = [row['appid'] for row in c.fetchall()]
+    
+    with Session(engine) as session:
+        statement = select(Game.appid).where(
+            or_(
+                Game.tags_updated == None,
+                Game.tags_updated < one_week_ago,
+                Game.developer == None,
+                Game.tags == ''
+            )
+        )
+        appids_to_update = session.exec(statement).all()
 
     if not appids_to_update:
-        conn.close()
         return
 
     total_games = len(appids_to_update)
@@ -282,4 +252,3 @@ def sync_game_tags():
             tqdm.write(f"Failed to update tags for appid {appid}: {e}")
 
     print("Tag sync complete!")
-    conn.close()

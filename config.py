@@ -10,7 +10,13 @@ STEAM_ID = os.getenv("STEAM_ID")
 CEDB_USER_ID = os.getenv("CEDB_USER_ID")
 
 # Database
-DB_FILE = f"{STEAM_ID}.games.db"
+def get_db_file():
+    sid = os.getenv("STEAM_ID")
+    if sid:
+        return f"{sid}.games.db"
+    return "games.db"
+
+DB_FILE = get_db_file()
 
 # Recommendation settings
 NUM_CATEGORIES = 50

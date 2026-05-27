@@ -7,7 +7,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CHILL_TAGS)
-from database import get_metadata
+from database import engine, Game, get_metadata, get_db
+from sqlmodel import Session, select, or_, func, case, cast, Integer
 
 
 def extract_tags(tag_str):
@@ -40,23 +41,20 @@ def extract_tags_with_counts(tag_str):
     return tags
 
 
-def get_game_weighted_tags(conn, appid):
+def get_game_weighted_tags(session, appid):
     """
     Fetch tags for a game and calculate their weights directly in logic.
     Returns (list_of_tags, dict_of_weights).
     """
-    rows = conn.execute("""
-        SELECT t.name, gt.count
-        FROM game_tags gt
-        JOIN tags t ON gt.tag_id = t.id
-        WHERE gt.appid = ?
-    """, (appid,)).fetchall()
+    from database import Tag, GameTag
+    statement = select(Tag.name, GameTag.count).join(GameTag).where(GameTag.appid == appid)
+    rows = session.exec(statement).all()
 
     tags = []
     raw_counts = {}
-    for r in rows:
-        tags.append(r['name'])
-        raw_counts[r['name']] = r['count']
+    for name, count in rows:
+        tags.append(name)
+        raw_counts[name] = count
 
     if not tags:
         return [], {}
@@ -83,7 +81,7 @@ def get_game_weighted_tags(conn, appid):
     return tags, weights
 
 
-def generate_recommendations(conn, stop_event=None):
+def generate_recommendations(session, stop_event=None):
     """Generate ML-based game recommendations."""
     now = int(time.time())
 
@@ -93,11 +91,11 @@ def generate_recommendations(conn, stop_event=None):
 
     # 2. Rated games (profile)
     # Include games with either a permanent rating or an active temporary rating
-    rated_db_games = [dict(r) for r in conn.execute("""
-        SELECT * FROM games 
-        WHERE ignored = 0 
-        AND (rating > 0 OR (temp_rating IS NOT NULL AND temp_rating_until > ?))
-    """, (now,)).fetchall()]
+    statement = select(Game).where(
+        Game.ignored == False,
+        or_(Game.rating > 0, (Game.temp_rating != None) & (Game.temp_rating_until > now))
+    )
+    rated_db_games = [g.dict() for g in session.exec(statement).all()]
 
     # Apply temporary ratings to the profile
     for g in rated_db_games:
@@ -106,17 +104,18 @@ def generate_recommendations(conn, stop_event=None):
 
     # 3. Candidate pool
     min_playtime = int(get_metadata('MIN_PLAYTIME', MIN_PLAYTIME))
-    all_candidates = [dict(r) for r in conn.execute("""
-                                                    SELECT *
-                                                    FROM games
-                                                    WHERE ignored = 0
-                                                      AND (ignore_until = 0 OR ignore_until < ?)
-                                                      AND playtime >= ?
-                                                      AND (tags IS NOT NULL AND tags != '')
-                                                    ORDER BY (temp_rating IS NOT NULL AND temp_rating_until > ?) DESC, 
-                                                             (rating > 0 AND finished = 0) DESC,
-                                                             playtime DESC
-                                                    """, (now, min_playtime, now)).fetchall()]
+    statement = select(Game).where(
+        Game.ignored == False,
+        or_(Game.ignore_until == 0, Game.ignore_until < now),
+        Game.playtime >= min_playtime,
+        Game.tags != None,
+        Game.tags != ""
+    ).order_by(
+        ((Game.temp_rating != None) & (Game.temp_rating_until > now)).desc(),
+        ((Game.rating > 0) & (Game.finished == False)).desc(),
+        Game.playtime.desc()
+    )
+    all_candidates = [g.dict() for g in session.exec(statement).all()]
 
     # Separate backlog (unfinished) from finished games for recommendation logic
     # We take enough games to satisfy the requested number of categories
@@ -125,10 +124,14 @@ def generate_recommendations(conn, stop_event=None):
     limit = max(300, num_categories * games_per_category + 50)
     
     backlog = [g for g in all_candidates if not g['finished']][:limit]
-    finished_candidates = [g for g in all_candidates if g['finished']]
+    finished_candidates = [g for g in all_candidates if g['finished']][:limit]
 
     if not rated_db_games:
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None
+    
+    if not backlog and not finished_candidates:
+        # No candidates found - return empty results instead of crashing
+        return pd.DataFrame(), pd.DataFrame(), rated_db_games, None, None, 0, set()
 
     # Custom token pattern to keep tags like "action_rpg" and "1990's" intact
     vectorizer = TfidfVectorizer(stop_words='english', max_features=300, token_pattern=r"(?u)\S+")
@@ -145,7 +148,7 @@ def generate_recommendations(conn, stop_event=None):
     # Profile building
     for g in rated_db_games:
         check_stop()
-        tags, weights = get_game_weighted_tags(conn, g['appid'])
+        tags, weights = get_game_weighted_tags(session, g['appid'])
         if not tags:
             # Fallback for games with missing normalized tags but having the tags string
             # This shouldn't happen much with the new filter, but good for robustness
@@ -201,7 +204,7 @@ def generate_recommendations(conn, stop_event=None):
     # Backlog prep
     for g in backlog + finished_candidates:
         check_stop()
-        tags, weights = get_game_weighted_tags(conn, g['appid'])
+        tags, weights = get_game_weighted_tags(session, g['appid'])
         if not tags:
             tags_dict = extract_tags_with_counts(g.get('tags', ''))
             tags = list(tags_dict.keys())
@@ -251,19 +254,23 @@ def generate_recommendations(conn, stop_event=None):
     
     # Calculate similarity
     check_stop()
-    similarities = cosine_similarity(user_profile_vector, candidate_matrix)[0]
-    
-    # Apply a small boost for games the user has already played (replay value)
-    # Replay value is high if the user rated it high but hasn't finished it
-    # Map back to candidates
-    for i, g in enumerate(backlog + finished_candidates):
-        score = float(similarities[i] * 100)
+    if candidate_matrix.shape[0] > 0:
+        similarities = cosine_similarity(user_profile_vector, candidate_matrix)[0]
         
-        # Boost for highly rated unfinished games (replays)
-        if g['rating'] >= 7 and not g['finished']:
-            score += 5.0
+        # Apply a small boost for games the user has already played (replay value)
+        # Replay value is high if the user rated it high but hasn't finished it
+        # Map back to candidates
+        for i, g in enumerate(backlog + finished_candidates):
+            score = float(similarities[i] * 100)
             
-        g['match_score'] = score
+            # Boost for highly rated unfinished games (replays)
+            if g['rating'] >= 7 and not g['finished']:
+                score += 5.0
+                
+            g['match_score'] = score
+    else:
+        for g in backlog + finished_candidates:
+            g['match_score'] = 0.0
 
     # Sort backlog by match score
     backlog.sort(key=lambda x: x['match_score'], reverse=True)
@@ -273,15 +280,18 @@ def generate_recommendations(conn, stop_event=None):
     return df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags
 
 
-def build_recommendations_html(conn, show_finished=False, stop_event=None):
+def build_recommendations_html(session, show_finished=False, stop_event=None):
     """Complete pipeline to generate recommendation HTML."""
     try:
-        df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags = generate_recommendations(conn, stop_event=stop_event)
+        df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags = generate_recommendations(session, stop_event=stop_event)
     except InterruptedError:
         return None
     
     if df_backlog is None:
         return "<h2>Please rate some games first!</h2>"
+    
+    if df_backlog.empty and df_finished.empty:
+        return "<h2>No candidate games found yet. Still fetching game data from Steam...</h2>"
 
     # Persistent columns
     html, shown_appids = build_persistent_sections(
@@ -326,6 +336,9 @@ def build_recommendations_html(conn, show_finished=False, stop_event=None):
                     break
             
             title = " & ".join(top_terms) if top_terms else f"Collection {i+1}"
+            
+            # Sort cluster data by rating and match score
+            cluster_data = cluster_data.sort_values(['rating', 'match_score'], ascending=False)
             
             html += f'<div class="column"><div class="col-title">{title}</div>'
             for _, r in cluster_data.iterrows():
@@ -433,35 +446,35 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
 
     rating_val = int(r['rating'] or 0)
     return f'''
-        <div class="game-card" data-appid="{r['appid']}">
+        <div class="game-card" data-appid="{r['appid']}" x-data="{{ open: false }}">
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{r['appid']}/header.jpg">
-            <div style="padding: 2px; flex-grow: 1; display: flex; flex-direction: column;">
-                <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start;">
-                    <b style="color: white; font-size: 0.85em; line-height: 1.2;">{r['name']}{replay_flag}</b>
+            <div class="card-content">
+                <div class="game-title-container">
+                    <div class="game-title">{r['name']}{replay_flag}</div>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                    <span class="match-score" style="font-size: 0.75em; opacity: 0.8;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <span class="match-score">
                         {round(r['match_score'], 1)}% Match
                     </span>
                     {up_next_badge}
                 </div>
-                <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px; margin-bottom: 8px;">
-                    <div style="display:flex; align-items:center; gap:6px;">
-                        <input type="range" min="0" max="10" value="{rating_val}"
-                               style="flex:1; accent-color:var(--accent); cursor: pointer; height: 4px;"
+                <div class="slider-container" style="margin-bottom: 12px;">
+                    <div class="slider-wrapper">
+                        <input type="range" class="rate-slider" data-appid="{r['appid']}" min="0" max="10" value="{rating_val}"
                                autocomplete="off"
+                               oninput="this.nextElementSibling.innerText = this.value"
                                onchange="rateCard({r['appid']}, this)">
-                        <span style="font-weight:800; color:var(--accent); min-width:14px; font-size: 0.8em;">{rating_val}</span>
+                        <span class="rating-value">{rating_val}</span>
                     </div>
                 </div>
-                <button class="why-toggle" style="font-size: 0.7em; padding: 4px 8px; width: fit-content;" onclick="toggleWhy(this)">Why?</button>
-                <div class="why-box">{why_html}</div>
+                <button class="why-toggle" @click="open = !open" x-text="open ? 'Hide' : 'Why?'">Why?</button>
+                <div class="why-box" :class="open ? 'open' : ''">{why_html}</div>
                 <div class="btn-group">
                     {finish_btn}
                     <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({r['appid']}, 'up_next', this)">Next</button>
                     <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({r['appid']}, 'ignore', this)">Ignore</button>
                     <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({r['appid']}, 'ban', this)">Ban</button>
-                    <a href="https://store.steampowered.com/app/{r['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
+                    <a href="https://store.steampowered.com/app/{r['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page">Steam</a>
                 </div>
             </div>
         </div>'''
@@ -489,12 +502,12 @@ def build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorize
 
     # Top Games - best overall matches
     games_per_cat = int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY))
-    top_rows = df_backlog.head(games_per_cat)
+    top_rows = df_backlog.sort_values(['rating', 'match_score'], ascending=False).head(games_per_cat)
     sections.append(make_column("Top Games", top_rows))
 
     # Hard Games - anything not 'Easy' difficulty
     hard_mask = df_backlog['difficulty'].fillna('Easy').str.lower() != 'easy'
-    hard_rows = df_backlog[hard_mask].head(games_per_cat)
+    hard_rows = df_backlog[hard_mask].sort_values(['rating', 'match_score'], ascending=False).head(games_per_cat)
     sections.append(make_column("Hard Games", hard_rows))
 
     # Chill Games - tag-based
@@ -505,23 +518,23 @@ def build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorize
         return bool(tokens & CHILL_TAGS)
 
     chill_mask = df_backlog['tags'].apply(is_chill)
-    chill_rows = df_backlog[chill_mask].head(games_per_cat)
+    chill_rows = df_backlog[chill_mask].sort_values(['rating', 'match_score'], ascending=False).head(games_per_cat)
     sections.append(make_column("Chill Games", chill_rows))
 
     # Recently Played - unfinished games played within last 30 days
     recent_mask = (df_backlog['finished'] == 0) & (df_backlog['last_played'] > now - 30 * 24 * 3600)
-    recent_rows = df_backlog[recent_mask].sort_values('last_played', ascending=False).head(games_per_cat)
+    recent_rows = df_backlog[recent_mask].sort_values(['rating', 'match_score', 'last_played'], ascending=False).head(games_per_cat)
     sections.append(make_column("Recently Played", recent_rows))
 
     # Finished Games - to allow marking as unfinished
     # These were separated in app.py to prevent them from appearing in other columns
     if show_finished:
-        finished_rows = df_finished.sort_values('last_played', ascending=False).head(games_per_cat)
+        finished_rows = df_finished.sort_values(['rating', 'match_score', 'last_played'], ascending=False).head(games_per_cat)
         sections.append(make_column("Finished Games", finished_rows))
 
     # Forgotten Games - unfinished games not played in over 1 year
     forgotten_mask = (df_backlog['finished'] == 0) & (df_backlog['last_played'] < now - 365 * 24 * 3600)
-    forgotten_rows = df_backlog[forgotten_mask].sort_values('last_played', ascending=True).head(games_per_cat)
+    forgotten_rows = df_backlog[forgotten_mask].sort_values(['rating', 'match_score', 'last_played'], ascending=[False, False, True]).head(games_per_cat)
     sections.append(make_column("Forgotten Games", forgotten_rows))
 
     return "".join(sections), shown

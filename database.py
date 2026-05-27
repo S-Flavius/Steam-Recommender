@@ -1,100 +1,101 @@
+from typing import Optional
+from sqlmodel import Field, SQLModel, create_engine, Session, select
+from config import DB_FILE
 import sqlite3
 import time
+import os
 
-from config import DB_FILE
+class Game(SQLModel, table=True):
+    __tablename__ = "games"
+    appid: int = Field(primary_key=True)
+    name: Optional[str] = None
+    playtime: int = Field(default=0)
+    last_played: int = Field(default=0)
+    rating: int = Field(default=0)
+    ignored: bool = Field(default=False)
+    finished: bool = Field(default=False)
+    difficulty: str = Field(default="Easy")
+    tags: Optional[str] = None
+    steam_score: Optional[float] = None
+    achievements_completed: bool = Field(default=False)
+    ignore_until: int = Field(default=0)
+    temp_rating: Optional[int] = None
+    temp_rating_until: Optional[int] = None
+    tags_updated: Optional[int] = None
+    achievements_total: int = Field(default=0)
+    achievements_unlocked: int = Field(default=0)
+    developer: Optional[str] = None
+    publisher: Optional[str] = None
 
+class Developer(SQLModel, table=True):
+    __tablename__ = "developers"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+
+class Publisher(SQLModel, table=True):
+    __tablename__ = "publishers"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+
+class Tag(SQLModel, table=True):
+    __tablename__ = "tags"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+
+class GameDeveloper(SQLModel, table=True):
+    __tablename__ = "game_developers"
+    appid: int = Field(foreign_key="games.appid", primary_key=True)
+    developer_id: int = Field(foreign_key="developers.id", primary_key=True)
+
+class GamePublisher(SQLModel, table=True):
+    __tablename__ = "game_publishers"
+    appid: int = Field(foreign_key="games.appid", primary_key=True)
+    publisher_id: int = Field(foreign_key="publishers.id", primary_key=True)
+
+class GameTag(SQLModel, table=True):
+    __tablename__ = "game_tags"
+    appid: int = Field(foreign_key="games.appid", primary_key=True)
+    tag_id: int = Field(foreign_key="tags.id", primary_key=True)
+    count: int
+
+class Metadata(SQLModel, table=True):
+    __tablename__ = "metadata"
+    key: str = Field(primary_key=True)
+    value: str
+
+def get_engine():
+    """Get the database engine, ensuring it matches the current STEAM_ID."""
+    from config import get_db_file
+    db_file = get_db_file()
+    
+    # Try to get STEAM_ID from an existing database if possible to keep it consistent
+    # But wait, config.get_db_file() already checks os.getenv("STEAM_ID").
+    # If the user changed it via settings, we need to make sure it's reflected.
+    
+    sqlite_url = f"sqlite:///{db_file}"
+    return create_engine(sqlite_url, connect_args={"check_same_thread": False})
+
+engine = get_engine()
 
 def get_db():
-    """Get a database connection with Row factory enabled."""
-    conn = sqlite3.connect(DB_FILE)
+    """Legacy helper for raw SQL if needed, but should prefer Session(engine)."""
+    from config import get_db_file
+    conn = sqlite3.connect(get_db_file())
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
     """Initialize the database schema."""
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS games
-        (
-            appid                  INTEGER PRIMARY KEY,
-            name                   TEXT,
-            playtime               INTEGER DEFAULT 0,
-            last_played            INTEGER DEFAULT 0,
-            rating                 INTEGER DEFAULT 0,
-            ignored                BOOLEAN DEFAULT 0,
-            finished               BOOLEAN DEFAULT 0,
-            difficulty             TEXT    DEFAULT 'Easy',
-            tags                   TEXT    DEFAULT NULL,
-            steam_score            REAL    DEFAULT NULL,
-            achievements_completed BOOLEAN DEFAULT 0,
-            ignore_until           INTEGER DEFAULT 0,
-            temp_rating            INTEGER DEFAULT NULL,
-            temp_rating_until      INTEGER DEFAULT NULL,
-            tags_updated           INTEGER DEFAULT NULL,
-            achievements_total     INTEGER DEFAULT 0,
-            achievements_unlocked  INTEGER DEFAULT 0,
-            developer              TEXT    DEFAULT NULL,
-            publisher              TEXT    DEFAULT NULL
-        )
-    ''')
-
-    # Normalized tables
-    c.execute('CREATE TABLE IF NOT EXISTS developers (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
-    c.execute('CREATE TABLE IF NOT EXISTS publishers (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
-    c.execute('CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS game_developers (
-            appid INTEGER,
-            developer_id INTEGER,
-            PRIMARY KEY (appid, developer_id),
-            FOREIGN KEY (appid) REFERENCES games (appid),
-            FOREIGN KEY (developer_id) REFERENCES developers (id)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS game_publishers (
-            appid INTEGER,
-            publisher_id INTEGER,
-            PRIMARY KEY (appid, publisher_id),
-            FOREIGN KEY (appid) REFERENCES games (appid),
-            FOREIGN KEY (publisher_id) REFERENCES publishers (id)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS game_tags (
-            appid INTEGER,
-            tag_id INTEGER,
-            count INTEGER,
-            PRIMARY KEY (appid, tag_id),
-            FOREIGN KEY (appid) REFERENCES games (appid),
-            FOREIGN KEY (tag_id) REFERENCES tags (id)
-        )
-    ''')
-
-    # Add columns if they don't exist (for backwards compatibility)
-    for column, definition in [
-        ('finished', 'BOOLEAN DEFAULT 0'),
-        ('ignore_until', 'INTEGER DEFAULT 0'),
-        ('temp_rating', 'INTEGER DEFAULT NULL'),
-        ('temp_rating_until', 'INTEGER DEFAULT NULL'),
-        ('tags_updated', 'INTEGER DEFAULT NULL'),
-        ('achievements_total', 'INTEGER DEFAULT 0'),
-        ('achievements_unlocked', 'INTEGER DEFAULT 0'),
-        ('developer', 'TEXT DEFAULT NULL'),
-        ('publisher', 'TEXT DEFAULT NULL'),
-    ]:
-        try:
-            c.execute(f'ALTER TABLE games ADD COLUMN {column} {definition}')
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-
-    c.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)')
+    if os.getenv("TESTING") == "true" and "test" not in str(engine.url).lower():
+        # During module import, engine might be default. 
+        # We don't want to crash on import, but we want to prevent creation.
+        print(f"DEBUG: Skipping init_db for production engine {engine.url} in testing mode")
+        return
+        
+    SQLModel.metadata.create_all(engine)
     
-    # Initialize default settings if they don't exist
+    # Initialize default settings
     from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE, 
                         IGNORE_DURATION_DAYS, UP_NEXT_DURATION_DAYS)
     defaults = {
@@ -106,36 +107,50 @@ def init_db():
         'UP_NEXT_DURATION_DAYS': str(UP_NEXT_DURATION_DAYS),
         'SHOW_FINISHED': '0'
     }
-    for key, value in defaults.items():
-        c.execute('INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)', (key, value))
-
-    conn.commit()
-    conn.close()
+    
+    with Session(engine) as session:
+        for key, value in defaults.items():
+            existing = session.get(Metadata, key)
+            if not existing:
+                session.add(Metadata(key=key, value=value))
+        
+        # Sync STEAM_ID and CEDB_USER_ID from env if not already in DB
+        from config import STEAM_ID, CEDB_USER_ID as CEDB_ID
+        if STEAM_ID and not session.get(Metadata, 'STEAM_ID'):
+            session.add(Metadata(key='STEAM_ID', value=STEAM_ID))
+        if CEDB_ID and not session.get(Metadata, 'CEDB_USER_ID'):
+            session.add(Metadata(key='CEDB_USER_ID', value=CEDB_ID))
+            
+        session.commit()
 
 
 def get_metadata(key, default=None):
     """Get a metadata value from the database."""
-    conn = get_db()
-    row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
-    conn.close()
-    return row['value'] if row else default
+    with Session(engine) as session:
+        metadata = session.get(Metadata, key)
+        return metadata.value if metadata else default
 
 
 def set_metadata(key, value):
     """Set a metadata value in the database."""
-    conn = get_db()
-    conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", (key, str(value)))
-    conn.commit()
-    conn.close()
+    with Session(engine) as session:
+        metadata = session.get(Metadata, key)
+        if metadata:
+            metadata.value = str(value)
+        else:
+            metadata = Metadata(key=key, value=str(value))
+        session.add(metadata)
+        session.commit()
 
 
 def cleanup_expired_temp_ratings():
     """Remove expired temporary ratings."""
-    conn = get_db()
-    now = int(time.time())
-    conn.execute(
-        "UPDATE games SET temp_rating = NULL, temp_rating_until = NULL WHERE temp_rating_until < ?",
-        (now,)
-    )
-    conn.commit()
-    conn.close()
+    with Session(engine) as session:
+        now = int(time.time())
+        statement = select(Game).where(Game.temp_rating_until < now)
+        results = session.exec(statement)
+        for game in results:
+            game.temp_rating = None
+            game.temp_rating_until = None
+            session.add(game)
+        session.commit()

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Stats - Steam Recommender{% endblock %}
+
+{% block content %}
+<div id="statsView" class="view">
+    <header class="view-header">
+        <div>
+            <h1>Stats & Insights</h1>
+            <p class="text-dim">Deep dive into your gaming habits</p>
+        </div>
+    </header>
+    
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Completion Rate</h3>
+            <div class="stat-value" id="statCompletion">0%</div>
+            <div class="stat-progress-bg"><div id="statCompletionBar" class="stat-progress-fill"></div></div>
+        </div>
+        <div class="stat-card">
+            <h3>Total Playtime</h3>
+            <div class="stat-value" id="statPlaytime">0h</div>
+            <div class="stat-desc">Across all games</div>
+        </div>
+        <div class="stat-card">
+            <h3>Average Rating</h3>
+            <div class="stat-value" id="statAvgRating">0.0</div>
+            <div class="stat-desc">Based on rated games</div>
+        </div>
+        <div class="stat-card">
+            <h3>Games Rated</h3>
+            <div class="stat-value" id="statRatedCount">0/0</div>
+            <div class="stat-desc">Progress through backlog</div>
+        </div>
+    </div>
+    
+    <div class="stats-row">
+        <div class="stat-section">
+            <h3>Top Genres</h3>
+            <div id="genreStats" class="genre-list">
+                <div class="loading-spinner"></div>
+            </div>
+        </div>
+        <div class="stat-section">
+            <h3>Rating Distribution</h3>
+            <div id="ratingDist" class="rating-dist">
+                <div class="loading-spinner"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function loadStats() {
+        fetch('/stats_data')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('statCompletion').textContent = data.completion_rate + '%';
+                document.getElementById('statCompletionBar').style.width = data.completion_rate + '%';
+                document.getElementById('statPlaytime').textContent = Math.round(data.total_playtime) + 'h';
+                document.getElementById('statAvgRating').textContent = data.avg_rating.toFixed(1);
+                document.getElementById('statRatedCount').textContent = data.rated_count + '/' + data.total_games;
+
+                const genreHtml = data.top_genres.map(g => `
+                    <div class="genre-item">
+                        <span class="genre-name">${g.name}</span>
+                        <div class="genre-bar-bg">
+                            <div class="genre-bar-fill" style="width: ${g.percent}%"></div>
+                        </div>
+                        <span class="genre-count">${g.count}</span>
+                    </div>
+                `).join('');
+                document.getElementById('genreStats').innerHTML = genreHtml;
+
+                const maxDist = Math.max(...data.rating_dist, 1);
+                const distHtml = data.rating_dist.map((count, i) => `
+                    <div class="dist-bar-wrapper">
+                        <div class="dist-bar" style="height: ${count > 0 ? (count / maxDist * 100) : 0}%" title="${count} games"></div>
+                        <span class="dist-label">${i + 1}</span>
+                    </div>
+                `).join('');
+                document.getElementById('ratingDist').innerHTML = distHtml;
+            });
+    }
+
+    loadStats();
+</script>
+{% endblock %}

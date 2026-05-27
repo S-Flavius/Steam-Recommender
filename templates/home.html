@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}Home - Steam Recommender{% endblock %}
+
+{% block content %}
+<div id="recommendationsView" class="view">
+    <header class="view-header">
+        <div>
+            <h1>Welcome back!</h1>
+            <p class="text-dim">Here's what we found in your backlog today.</p>
+        </div>
+        <div class="header-actions">
+            <div id="unratedCount" class="unrated-pill">
+                <i data-lucide="star"></i>
+                <span x-text="`${unratedCount} left to rate`">{{ unrated_count }} left to rate</span>
+            </div>
+        </div>
+    </header>
+
+    <section class="section">
+        <div class="section-header">
+            <h2>Rate & Categorize</h2>
+            <p class="text-dim">Rate these games to improve your recommendations</p>
+        </div>
+        <div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
+    </section>
+    
+    <div class="loading-text" id="loading">AI is crunching the data... Please wait...</div>
+    
+    <section class="section">
+        <div class="section-header">
+            <h2>Your Recommendations</h2>
+        </div>
+        <div class="board" id="results">{{ results_html | safe }}</div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let trainingTimer = null;
+
+    function generateRecommendations() {
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+
+        if (trainingTimer) clearTimeout(trainingTimer);
+        loading.style.display = 'block';
+
+        trainingTimer = setTimeout(() => {
+            let ratings = {};
+            document.querySelectorAll('.rate-slider').forEach(s => {
+                let val = parseInt(s.value);
+                if (val > 0) {
+                    ratings[s.getAttribute('data-appid')] = val;
+                }
+            });
+
+            fetch('/recommend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(ratings)
+            })
+                .then(res => res.json())
+                .then((data) => {
+                    if (data.success) {
+                        pollTrainingStatus();
+                    } else {
+                        loading.style.display = 'none';
+                    }
+                })
+                .catch(err => {
+                    console.error("AI Training Trigger Failed:", err);
+                    loading.style.display = 'none';
+                });
+        }, 1000);
+    }
+
+    function pollTrainingStatus() {
+        const loading = document.getElementById('loading');
+        if (loading.style.display === 'none' && (document.getElementById('results').innerHTML.trim() === "" || document.getElementById('results').innerHTML.includes('Please rate some games first!') || document.getElementById('results').innerHTML.includes('Still fetching game data'))) {
+             loading.style.display = 'block';
+        }
+        fetch('/training_status')
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'complete') {
+                    const loading = document.getElementById('loading');
+                    const results = document.getElementById('results');
+
+                    loading.style.display = 'none';
+                    results.innerHTML = data.data.results_html;
+                    document.getElementById('carousel').innerHTML = data.data.carousel_html;
+                    
+                    const countEl = document.getElementById('unratedCount');
+                    if (countEl && data.data.unrated_count !== undefined) {
+                        const span = countEl.querySelector('span');
+                        if (span) span.textContent = `${data.data.unrated_count} left to rate`;
+                    }
+                    lucide.createIcons();
+                } else if (data.status === 'in_progress') {
+                    setTimeout(pollTrainingStatus, 1000);
+                } else {
+                    document.getElementById('loading').style.display = 'none';
+                }
+            })
+            .catch(err => {
+                console.error("Polling status failed:", err);
+                setTimeout(pollTrainingStatus, 2000);
+            });
+    }
+
+    if (document.getElementById('results').innerHTML.trim() === "" || document.getElementById('results').innerHTML.includes('Please rate some games first!') || document.getElementById('results').innerHTML.includes('Still fetching game data')) {
+        pollTrainingStatus();
+    }
+</script>
+{% endblock %}
