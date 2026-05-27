@@ -11,3 +11,7 @@ uv.lock
 
 # Virtual environments
 .venv
+
+# Pycharm
+.idea/
+

@@ -77,19 +77,19 @@ def get_game_data(appid, force_refresh=False):
     """
     Fetch game tags and Steam score from SteamSpy.
     Returns cached data if available, otherwise fetches and stores it.
-    
+
     Args:
         appid: The Steam app ID
         force_refresh: If True, always fetch fresh data from SteamSpy
     """
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT tags, steam_score FROM games WHERE appid = ?", (appid,))
+    c.execute("SELECT * FROM games WHERE appid = ?", (appid,))
     row = c.fetchone()
 
     if not force_refresh and row and row['tags']:
         conn.close()
-        return row['tags'], row['steam_score']
+        return dict(row)
 
     # Fetch from SteamSpy
     try:
@@ -101,39 +101,76 @@ def get_game_data(appid, force_refresh=False):
     except Exception:
         data = {}
 
-    # Parse tags
+    # Parse tags into ordered string with weights (first 30 in API order)
     raw_tags = data.get("tags", {})
+    tag_list = []
     if isinstance(raw_tags, dict):
-        tags = " ".join(list(raw_tags.keys())).replace("-", "_")
-    else:
-        tags = ""
+        tag_items = list(raw_tags.items())[:30]  # Take first 30 in order
+        for t, count in tag_items:
+            tag_name = t.replace('-', '_').replace(' ', '_').lower()
+            tag_list.append((tag_name, count))
+    
+    tags_str = " ".join([f"{t}:{count}" for t, count in tag_list])
 
-    # Add game name as a tag
-    name = data.get("name", "").replace(" ", "_").lower()
-    if name:
-        tags += f" {name}"
+    # Extract extra data to save in DB
+    name = data.get("name", "")
+    developer_str = data.get("developer", "")
+    publisher_str = data.get("publisher", "")
 
-    # Add developer and publisher as tags
-    developer = data.get("developer", "")
-    publisher = data.get("publisher", "")
-    if developer:
-        tags += f" {developer.replace(' ', '_')}"
-    if publisher and publisher != developer:
-        tags += f" {publisher.replace(' ', '_')}"
-
-    # Calculate Steam score using Wilson score interval
-    pos, neg = data.get("positive", 0), data.get("negative", 0)
+    # Calculate Steam score using a Wilson score interval
+    pos, neg = data.get("positive") or 0, data.get("negative") or 0
     total = pos + neg
     if total > 0:
         steam_score = (pos / total - (pos / total - 0.5) * (2 ** -math.log10(total + 1))) * 10
     else:
         steam_score = 5.0
 
-    c.execute("UPDATE games SET tags = ?, steam_score = ?, tags_updated = ? WHERE appid = ?",
-              (tags, steam_score, int(time.time()), appid))
+    # Update main games table
+    c.execute("""
+        UPDATE games 
+        SET tags = ?, 
+            steam_score = ?, 
+            tags_updated = ?,
+            name = CASE WHEN name IS NULL OR name = 'Unknown' THEN ? ELSE name END,
+            developer = ?,
+            publisher = ?
+        WHERE appid = ?
+    """, (tags_str, steam_score, int(time.time()), name, developer_str, publisher_str, appid))
+
+    # Normalized storage
+    # 1. Tags
+    for tag_name, count in tag_list:
+        c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+        c.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+        tag_id = c.fetchone()[0]
+        c.execute("INSERT OR REPLACE INTO game_tags (appid, tag_id, count) VALUES (?, ?, ?)",
+                  (appid, tag_id, count))
+
+    # 2. Developers
+    if developer_str:
+        devs = [d.strip() for d in developer_str.split(',')]
+        for dev_name in devs:
+            c.execute("INSERT OR IGNORE INTO developers (name) VALUES (?)", (dev_name,))
+            c.execute("SELECT id FROM developers WHERE name = ?", (dev_name,))
+            dev_id = c.fetchone()[0]
+            c.execute("INSERT OR REPLACE INTO game_developers (appid, developer_id) VALUES (?, ?)",
+                      (appid, dev_id))
+
+    # 3. Publishers
+    if publisher_str:
+        pubs = [p.strip() for p in publisher_str.split(',')]
+        for pub_name in pubs:
+            c.execute("INSERT OR IGNORE INTO publishers (name) VALUES (?)", (pub_name,))
+            c.execute("SELECT id FROM publishers WHERE name = ?", (pub_name,))
+            pub_id = c.fetchone()[0]
+            c.execute("INSERT OR REPLACE INTO game_publishers (appid, publisher_id) VALUES (?, ?)",
+                      (appid, pub_id))
+        
     conn.commit()
+    c.execute("SELECT * FROM games WHERE appid = ?", (appid,))
+    updated_row = c.fetchone()
     conn.close()
-    return tags, steam_score
+    return dict(updated_row) if updated_row else {}
 
 
 def is_100_percent_completed(appid):
@@ -170,13 +207,23 @@ def is_100_percent_completed(appid):
                 conn.close()
                 return False
 
+            # Calculate achievement progress
+            total = len(achs)
+            unlocked = sum(1 for a in achs if a.get("achieved", 0) == 1)
+
+            # Update achievement counts
+            c.execute(
+                "UPDATE games SET achievements_total = ?, achievements_unlocked = ? WHERE appid = ?",
+                (total, unlocked, appid)
+            )
+            conn.commit()
+
             if all(a.get("achieved", 0) == 1 for a in achs):
                 c.execute("""
-                          UPDATE games
-                          SET achievements_completed = 1,
-                              finished               = 1
-                          WHERE appid = ?
-                          """, (appid,))
+                    UPDATE games
+                    SET achievements_completed = 1, finished = 1
+                    WHERE appid = ?
+                """, (appid,))
                 conn.commit()
                 conn.close()
                 return True
@@ -192,14 +239,25 @@ def sync_game_tags():
     conn = get_db()
     c = conn.cursor()
 
-    # Get games that need tag updates (older than 1 week or never updated)
+    # Get games that need tag updates (older than 1 week, never updated, or missing developer column metadata, or empty tags)
     one_week_ago = int(time.time()) - 604800
-    c.execute("""
-              SELECT appid
-              FROM games
-              WHERE tags_updated IS NULL
-                 OR tags_updated < ?
-              """, (one_week_ago,))
+    try:
+        c.execute("""
+                  SELECT appid
+                  FROM games
+                  WHERE tags_updated IS NULL
+                     OR tags_updated < ?
+                     OR developer IS NULL
+                     OR tags = ''
+                  """, (one_week_ago,))
+    except Exception:
+        c.execute("""
+                  SELECT appid
+                  FROM games
+                  WHERE tags_updated IS NULL
+                     OR tags_updated < ?
+                     OR tags = ''
+                  """, (one_week_ago,))
 
     appids_to_update = [row['appid'] for row in c.fetchall()]
 

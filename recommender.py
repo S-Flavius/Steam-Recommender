@@ -3,6 +3,36 @@ import time
 from config import GAMES_PER_CATEGORY, CHILL_TAGS
 
 
+def extract_tags(tag_str):
+    """Extracts tag names from a string containing 'tag:weight' tokens."""
+    if not tag_str:
+        return set()
+    tags = set()
+    for token in tag_str.split():
+        if ":" in token:
+            tags.add(token.rsplit(":", 1)[0])
+        else:
+            tags.add(token)
+    return tags
+
+
+def extract_tags_with_counts(tag_str):
+    """Extracts tag names and their counts from a string containing 'tag:count' tokens."""
+    if not tag_str:
+        return {}
+    tags = {}
+    for token in tag_str.split():
+        if ":" in token:
+            parts = token.rsplit(":", 1)
+            try:
+                tags[parts[0]] = float(parts[1])
+            except ValueError:
+                tags[parts[0]] = 1.0
+        else:
+            tags[token] = 1.0
+    return tags
+
+
 def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated_start_idx):
     """
     Build a human-readable explanation for why a game was recommended.
@@ -10,7 +40,7 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     """
     reasons = []
 
-    cand_tags = set(candidate.get('tags', '').split())
+    cand_tags = extract_tags(candidate.get('tags', ''))
     steam_score = candidate.get('steam_score')
     difficulty = candidate.get('difficulty', 'Easy')
     rating = candidate.get('rating', 0)
@@ -22,7 +52,7 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     for rg in rated_db_games:
         if rg['rating'] < 5:
             continue
-        rg_tags = set(rg.get('tags', '').split())
+        rg_tags = extract_tags(rg.get('tags', ''))
         overlap = cand_tags & rg_tags
         if len(overlap) >= 2:
             similar_to.append((rg['name'], rg['rating'], len(overlap)))
@@ -59,12 +89,20 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
     liked_tags = {}
     for rg in rated_db_games:
         if rg['rating'] >= 7:
-            for t in rg.get('tags', '').split():
-                liked_tags[t] = liked_tags.get(t, 0) + 1
+            rg_tag_counts = extract_tags_with_counts(rg.get('tags', ''))
+            for t, count in rg_tag_counts.items():
+                # Weighted contribution to profile
+                liked_tags[t] = liked_tags.get(t, 0) + (count / 100.0) # Assume 100 is a "meaningful" vote count
 
-    highlight_tags = [t for t in cand_tags if liked_tags.get(t, 0) >= 2]
+    highlight_tags = [t for t in cand_tags if liked_tags.get(t, 0) >= 0.5]
+    
+    # Filter out metadata tags from highlights if they appear there (dev/pub)
+    # We don't have meta_tags here easily, but we can try to filter out tags that aren't in liked_tags but were added in app.py
+    # Actually, if it's in liked_tags, it's fine to show.
+    
     highlight_tags.sort(key=lambda t: liked_tags.get(t, 0), reverse=True)
     if highlight_tags:
+        # Filter out common/uninteresting tags if needed, but for now just show top ones
         tag_str = ", ".join(t.replace("_", " ").title() for t in highlight_tags[:10])
         reasons.append(f"Matches your taste in: {tag_str}")
 
@@ -81,11 +119,12 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
     why_html = "".join(f"<span>{reason}</span>" for reason in reasons)
 
     # Determine which finish button to show
-    if not r.get('finished', 0):
+    if not r.get('finished'):
         finish_btn = f'<button class="icon-btn btn-finish" onclick="finishGame({r["appid"]}, this)">Finish</button>'
     else:
         finish_btn = f'<button class="icon-btn btn-unfinish" onclick="updateGame({r["appid"]}, \'unfinish\', this)">Unfinish</button>'
 
+    rating_val = int(r.get('rating') or 0)
     return f'''
         <div class="game-card">
             <div class="btn-group">
@@ -102,10 +141,10 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
                 </span>
                 <div style="display:flex; align-items:center; gap:6px; margin-top:5px;">
                     <span style="font-size:0.75em; color:#8899aa;">Rating:</span>
-                    <input type="range" min="0" max="10" value="{int(r['rating'])}"
+                    <input type="range" min="0" max="10" value="{rating_val}"
                            style="flex:1; accent-color:#66c0f4;"
                            onchange="rateCard({r['appid']}, this)">
-                    <span style="font-weight:bold; color:#66c0f4; min-width:14px;">{int(r['rating'])}</span>
+                    <span style="font-weight:bold; color:#66c0f4; min-width:14px;">{rating_val}</span>
                 </div>
                 <button class="why-toggle" onclick="toggleWhy(this)">Why?</button>
                 <div class="why-box">{why_html}</div>
@@ -146,7 +185,7 @@ def build_persistent_sections(df_backlog, rated_db_games, vectorizer, tfidf, rat
     def is_chill(tag_str):
         if not tag_str:
             return False
-        tokens = {t.lower() for t in tag_str.split()}
+        tokens = extract_tags(tag_str)
         return bool(tokens & CHILL_TAGS)
 
     chill_mask = df_backlog['tags'].apply(is_chill)
