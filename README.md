@@ -84,7 +84,8 @@ steam-recommender/
 ├── config.py           # Configuration and constants
 ├── database.py         # SQLite database management
 ├── sync.py             # Steam API and external data sync
-├── recommender.py      # ML recommendation engine
+├── recommender.py      # ML recommendation engine & core logic
+├── ui_helpers.py       # HTML components and UI logic
 ├── templates/
 │   └── index.html      # Main UI template
 ├── static/

@@ -1,19 +1,15 @@
-import math
 import os
 import threading
 import time
 
-import numpy as np
-import pandas as pd
 from flask import Flask, request, render_template, jsonify
-from sklearn.cluster import KMeans
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
-from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE, IGNORE_DURATION_DAYS, UP_NEXT_DURATION_DAYS)
+from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE,
+                    IGNORE_DURATION_DAYS, UP_NEXT_DURATION_DAYS)
 from database import get_db, init_db, cleanup_expired_temp_ratings, get_metadata, set_metadata
-from recommender import render_game_card, build_persistent_sections
-from sync import sync_steam_library, sync_cedb_difficulties, sync_game_tags, get_game_data
+from recommender import build_recommendations_html
+from sync import sync_steam_library, sync_cedb_difficulties, sync_game_tags
+from ui_helpers import get_carousel_html, get_unrated_count
 
 app = Flask(__name__)
 
@@ -41,72 +37,6 @@ def _background_sync():
     finally:
         with _sync_lock:
             _sync_in_progress = False
-
-
-def get_unrated_count(conn):
-    """Get the total count of unrated games that are not ignored."""
-    now = int(time.time())
-    row = conn.execute("""
-        SELECT COUNT(*) as count
-        FROM games
-        WHERE rating = 0
-          AND ignored = 0
-          AND (ignore_until = 0 OR ignore_until < ?)
-          AND (temp_rating IS NULL OR temp_rating_until < ?)
-    """, (now, now)).fetchone()
-    return row['count'] if row else 0
-
-
-def get_carousel_html(conn):
-    """Build HTML for the rating carousel of unrated games."""
-    carousel_size = int(get_metadata('CAROUSEL_SIZE', CAROUSEL_SIZE))
-    games = conn.execute("""
-                         SELECT *
-                         FROM games
-                         WHERE rating = 0
-                           AND ignored = 0
-                           AND (ignore_until = 0 OR ignore_until < ?)
-                           AND (temp_rating IS NULL OR temp_rating_until < ?)
-                         ORDER BY CASE WHEN finished = 1 THEN 0 ELSE 1 END,
-                                  playtime DESC
-                         LIMIT ?
-                         """, (int(time.time()), int(time.time()), carousel_size)).fetchall()
-
-    html_parts = []
-    for g in games:
-        rating = g['rating'] or 0
-        flag = " (Finished)" if g['finished'] else ""
-        
-        # Determine which finish button to show
-        if not g['finished']:
-            finish_btn = f'<button class="icon-btn btn-finish" title="Finish" onclick="finishGame({g["appid"]}, this)">Done</button>'
-        else:
-            finish_btn = f'<button class="icon-btn btn-unfinish" title="Unfinish" onclick="unfinishGame({g["appid"]}, this)">Revive</button>'
-
-        part = f'''
-        <div class="rate-card" data-appid="{g['appid']}">
-            <div class="btn-group">
-                {finish_btn}
-                <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({g['appid']}, 'up_next', this)">Next</button>
-                <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
-                <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
-                <a href="https://store.steampowered.com/app/{g['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
-            </div>
-            <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{g['appid']}/header.jpg">
-            <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start; justify-content: center;">
-                <b style="color: white; font-size: 0.85em; line-height: 1.2;">{g['name']}{flag}</b>
-            </div>
-            <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px;">
-                <div style="display:flex; align-items:center; gap:6px;">
-                    <input type="range" class="rate-slider" data-appid="{g['appid']}" min="0" max="10" value="{rating}" 
-                           style="flex:1; accent-color:var(--accent); cursor: pointer; height: 4px;"
-                           oninput="this.nextElementSibling.innerText = this.value">
-                    <span style="font-weight: 800; color: var(--accent); min-width: 14px; font-size: 0.8em;">{rating}</span>
-                </div>
-            </div>
-        </div>'''
-        html_parts.append(part)
-    return "".join(html_parts)
 
 
 @app.route('/')
@@ -224,55 +154,6 @@ def settings():
     return jsonify({"success": True})
 
 
-def get_game_weighted_tags(conn, appid):
-    """
-    Fetch tags for a game and calculate their weights directly in logic.
-    Returns (list_of_tags, dict_of_weights).
-    """
-    rows = conn.execute("""
-        SELECT t.name, gt.count
-        FROM game_tags gt
-        JOIN tags t ON gt.tag_id = t.id
-        WHERE gt.appid = ?
-    """, (appid,)).fetchall()
-
-    if not rows:
-        return [], {}
-
-    tags = []
-    raw_counts = {}
-    for r in rows:
-        tag_name = r['name']
-        count = float(r['count'] or 1.0)
-        tags.append(tag_name)
-        raw_counts[tag_name] = count
-
-    num_tags = len(tags)
-    default_weight = 0.1
-    weights = {}
-    
-    # 1. Positional relevancy (based on current order in DB, which matches Steam order if inserted correctly)
-    pos_weights = {}
-    for i, tag in enumerate(tags):
-        if num_tags > 1:
-            pos_weights[tag] = 1.0 - (i / (num_tags - 1)) * (1.0 - default_weight)
-        else:
-            pos_weights[tag] = 1.0
-
-    # 2. Count-based weights
-    max_count = max(raw_counts.values()) if raw_counts else 1.0
-    count_weights = {}
-    for tag in tags:
-        count_weights[tag] = (raw_counts[tag] / max_count) * (1.0 - default_weight) + default_weight
-
-    # 3. Combine
-    for tag in tags:
-        combined = pos_weights[tag] * count_weights[tag]
-        weights[tag] = round(max(0.01, min(1.0, combined)), 4)
-
-    return tags, weights
-
-
 @app.route('/recommend', methods=['POST'])
 def recommend():
     """Generate ML-based game recommendations."""
@@ -285,252 +166,19 @@ def recommend():
                      (score, aid))
     conn.commit()
 
-    # 2. Rated games (profile)
-    # Include games with either a permanent rating or an active temporary rating
-    now = int(time.time())
-    rated_db_games = [dict(r) for r in conn.execute("""
-        SELECT * FROM games 
-        WHERE ignored = 0 
-        AND (rating > 0 OR (temp_rating IS NOT NULL AND temp_rating_until > ?))
-    """, (now,)).fetchall()]
-
-    # Apply temporary ratings to the profile
-    for g in rated_db_games:
-        if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
-            g['rating'] = g['temp_rating']
-
-    # 3. Candidate pool
-    min_playtime = int(get_metadata('MIN_PLAYTIME', MIN_PLAYTIME))
-    all_candidates = [dict(r) for r in conn.execute("""
-                                                    SELECT *
-                                                    FROM games
-                                                    WHERE ignored = 0
-                                                      AND (ignore_until = 0 OR ignore_until < ?)
-                                                      AND playtime >= ?
-                                                    ORDER BY (temp_rating IS NOT NULL AND temp_rating_until > ?) DESC, playtime DESC
-                                                    """, (int(time.time()), min_playtime, int(time.time()))).fetchall()]
-
-    # Separate backlog (unfinished) from finished games for recommendation logic
-    backlog = [g for g in all_candidates if not g['finished']][:300]
-    finished_candidates = [g for g in all_candidates if g['finished']]
-
-    if not rated_db_games:
-        unrated_count = get_unrated_count(conn)
-        carousel_html = get_carousel_html(conn)
-        conn.close()
+    res_html = build_recommendations_html(conn)
+    
+    unrated_count = get_unrated_count(conn)
+    carousel_html = get_carousel_html(conn)
+    conn.close()
+    
+    if res_html is None:
         return jsonify({
             "results_html": "<h2>Please rate some games first!</h2>",
             "carousel_html": carousel_html,
             "unrated_count": unrated_count
         })
 
-    # Custom token pattern to keep tags like "action_rpg" and "1990's" intact
-    vectorizer = TfidfVectorizer(stop_words='english', max_features=300, token_pattern=r"(?u)\S+")
-
-    # We will build a list of space-separated tags (without weights) to fit the vectorizer
-    all_tags_list = []
-
-    # We will also keep track of the weight dictionary for each game
-    game_weights = []
-
-    # Set to track metadata tags (dev/pub) to exclude from cluster names
-    meta_tags = set()
-
-    # Profile building
-    for g in rated_db_games:
-        tags, weights = get_game_weighted_tags(conn, g['appid'])
-        
-        s_db = g.get('steam_score')
-        if s_db is None:
-            s_db = 5.0
-        
-        rating = float(g.get('rating') or 0)
-        
-        # Give higher weight to Up Next games in the profile
-        if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
-            weight = rating * 1.5
-        else:
-            diff = -math.fabs(rating - float(s_db))
-            weight = rating * 1.1 + diff
-
-        # Add metadata as tags with max weight
-        if g.get('developer'):
-            devs = [d.strip() for d in g['developer'].split(',')]
-            for dev in devs:
-                dev_tag = dev.replace(' ', '_').lower()
-                if dev_tag not in tags:
-                    tags.append(dev_tag)
-                weights[dev_tag] = 1.0
-                meta_tags.add(dev_tag)
-        if g.get('publisher'):
-            pubs = [p.strip() for p in g['publisher'].split(',')]
-            for pub in pubs:
-                pub_tag = pub.replace(' ', '_').lower()
-                if pub_tag not in tags:
-                    tags.append(pub_tag)
-                weights[pub_tag] = 1.0
-                meta_tags.add(pub_tag)
-
-        # Reconstruct tag string for recommender functions and tfidf
-        g['tags'] = " ".join([f"{t}:{weights[t]*100}" for t in tags]) # Re-add counts for build_explanation compatibility
-        g['weight'] = weight
-        all_tags_list.append(" ".join(tags))
-        game_weights.append({"weight": weight, "tag_weights": weights})
-
-    # Backlog prep
-    for g in backlog + finished_candidates:
-        tags, weights = get_game_weighted_tags(conn, g['appid'])
-
-        if g['difficulty'] and g['difficulty'] != 'Easy':
-            diff_tag = str(g['difficulty']).replace(' ', '_').lower()
-            if diff_tag not in tags:
-                tags.append(diff_tag)
-            weights[diff_tag] = 1.0
-
-        # Add metadata as tags with max weight
-        if g.get('developer'):
-            devs = [d.strip() for d in g['developer'].split(',')]
-            for dev in devs:
-                dev_tag = dev.replace(' ', '_').lower()
-                if dev_tag not in tags:
-                    tags.append(dev_tag)
-                weights[dev_tag] = 1.0
-                meta_tags.add(dev_tag)
-        if g.get('publisher'):
-            pubs = [p.strip() for p in g['publisher'].split(',')]
-            for pub in pubs:
-                pub_tag = pub.replace(' ', '_').lower()
-                if pub_tag not in tags:
-                    tags.append(pub_tag)
-                weights[pub_tag] = 1.0
-                meta_tags.add(pub_tag)
-
-        # Apply temporary rating if active
-        if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
-            g['rating'] = g['temp_rating']
-
-        priority_boost = 1.0
-        if float(g['rating'] or 0) > 0 and not g['finished']:
-            if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
-                priority_boost = 5.0  # Massive boost for "Up Next" games
-            else:
-                priority_boost = 1.25 # Standard boost for played but unfinished games
-
-        g['tags'] = " ".join([f"{t}:{weights[t]*100}" for t in tags]) # Re-add counts for build_explanation compatibility
-        all_tags_list.append(" ".join(tags))
-        game_weights.append({"priority_boost": priority_boost, "tag_weights": weights})
-
-    df_backlog = pd.DataFrame(backlog)
-
-    # Fit the vectorizer to get the vocabulary
-    vectorizer.fit(all_tags_list)
-    vocab = vectorizer.vocabulary_
-
-    # Build the custom TF-IDF matrix by multiplying the default TF-IDF values by our custom weights
-    tfidf = vectorizer.transform(all_tags_list).tolil()
-
-    for i, data in enumerate(game_weights):
-        for tag, weight in data["tag_weights"].items():
-            if tag in vocab:
-                j = vocab[tag]
-                tfidf[i, j] *= weight
-
-    tfidf = tfidf.tocsr()
-
-    rated_start_idx = 0
-
-    # User vector
-    user_vec = np.zeros((1, tfidf.shape[1]))
-    for i, g in enumerate(rated_db_games):
-        if g['tags']:
-            game_vec = tfidf[i].toarray()
-            user_vec += (game_vec * game_weights[i]["weight"])
-
-    # Matching
-    backlog_vecs = tfidf[len(rated_db_games):]
-    
-    # Separate vectors for backlog and finished
-    backlog_vecs_only = backlog_vecs[:len(backlog)]
-    finished_vecs_only = backlog_vecs[len(backlog):]
-
-    df_backlog['match_score'] = cosine_similarity(backlog_vecs_only, user_vec).flatten() * 80
-    df_finished = pd.DataFrame(finished_candidates)
-    if not df_finished.empty:
-        df_finished['match_score'] = cosine_similarity(finished_vecs_only, user_vec).flatten() * 80
-    else:
-        df_finished['match_score'] = []
-
-    for i in range(len(df_backlog)):
-        df_backlog.loc[i, 'match_score'] *= game_weights[len(rated_db_games) + i]["priority_boost"]
-
-    # Add rating bonus
-    df_backlog['match_score'] += df_backlog['rating'].fillna(0).astype(float) * 2.0
-    df_backlog['match_score'] = np.clip(df_backlog['match_score'], 0, 100)
-    
-    if not df_finished.empty:
-        df_finished['match_score'] += df_finished['rating'].fillna(0).astype(float) * 2.0
-        df_finished['match_score'] = np.clip(df_finished['match_score'], 0, 100)
-
-    if df_backlog.empty and df_finished.empty:
-        unrated_count = get_unrated_count(conn)
-        carousel_html = get_carousel_html(conn)
-        conn.close()
-        return jsonify({
-            "results_html": "<h2>No matches found. Try rating more games!</h2>",
-            "carousel_html": carousel_html,
-            "unrated_count": unrated_count
-        })
-
-    # Clustering
-    num_categories = int(get_metadata('NUM_CATEGORIES', NUM_CATEGORIES))
-    num_clusters = min(num_categories, len(df_backlog) // 2) or 1
-    kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
-    df_backlog['cluster'] = kmeans.fit_predict(backlog_vecs_only)
-
-    terms = vectorizer.get_feature_names_out()
-    names = {}
-    for i in range(num_clusters):
-        top_indices = kmeans.cluster_centers_.argsort()[:, ::-1][i, :]
-
-        selected_terms = []
-        for idx in top_indices:
-            term = terms[idx]
-            if term not in meta_tags and not any(char.isdigit() for char in term):
-                selected_terms.append(term)
-            if len(selected_terms) >= 2:
-                break
-
-        if selected_terms:
-            names[i] = " & ".join([t.replace('_', ' ') for t in selected_terms]).title()
-        else:
-            names[i] = "Miscellaneous"
-
-    df_backlog['category'] = df_backlog['cluster'].map(names)
-
-    # Sort after assigning clusters so predictions align correctly with backlog_vecs_only
-    df_backlog = df_backlog.sort_values(by='match_score', ascending=False)
-
-    # Build HTML
-    # 1. Persistent categories first
-    show_finished = get_metadata('SHOW_FINISHED', '0') == '1'
-    persistent_html, shown_app_ids = build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorizer, tfidf,
-                                                               rated_start_idx, show_finished=show_finished)
-
-    # 2. Dynamic cluster columns
-    res_html = persistent_html
-    games_per_category = int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY))
-    for cat, group in df_backlog.groupby('category'):
-        filtered = group[~group['appid'].isin(shown_app_ids)]
-        if filtered.empty:
-            filtered = group
-        res_html += f'<div class="column"><div class="col-title">{cat}</div>'
-        for _, r in filtered.head(games_per_category).iterrows():
-            res_html += render_game_card(r.to_dict(), rated_db_games, vectorizer, tfidf, rated_start_idx)
-        res_html += '</div>'
-
-    unrated_count = get_unrated_count(conn)
-    carousel_html = get_carousel_html(conn)
-    conn.close()
     return jsonify({"results_html": res_html, "carousel_html": carousel_html, "unrated_count": unrated_count})
 
 

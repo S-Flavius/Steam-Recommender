@@ -79,10 +79,6 @@ def get_game_data(appid, force_refresh=False):
     """
     Fetch game tags and Steam score from SteamSpy.
     Returns cached data if available, otherwise fetches and stores it.
-
-    Args:
-        appid: The Steam app ID
-        force_refresh: If True, always fetch fresh data from SteamSpy
     """
     conn = get_db()
     c = conn.cursor()
@@ -96,10 +92,7 @@ def get_game_data(appid, force_refresh=False):
     # Fetch from SteamSpy
     try:
         res = requests.get(f"https://steamspy.com/api.php?request=appdetails&appid={appid}")
-        if res.status_code == 200:
-            data = res.json()
-        else:
-            data = {}
+        data = res.json() if res.status_code == 200 else {}
     except Exception:
         data = {}
 
@@ -107,14 +100,13 @@ def get_game_data(appid, force_refresh=False):
     raw_tags = data.get("tags", {})
     tag_list = []
     if isinstance(raw_tags, dict):
-        tag_items = list(raw_tags.items())[:30]  # Take first 30 in order
+        tag_items = list(raw_tags.items())[:30]
         for t, count in tag_items:
             tag_name = t.replace('-', '_').replace(' ', '_').lower()
             tag_list.append((tag_name, count))
     
     tags_str = " ".join([f"{t}:{count}" for t, count in tag_list])
 
-    # Extract extra data to save in DB
     name = data.get("name", "")
     developer_str = data.get("developer", "")
     publisher_str = data.get("publisher", "")
@@ -140,39 +132,44 @@ def get_game_data(appid, force_refresh=False):
     """, (tags_str, steam_score, int(time.time()), name, developer_str, publisher_str, appid))
 
     # Normalized storage
-    # 1. Tags
-    for tag_name, count in tag_list:
-        c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
-        c.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
-        tag_id = c.fetchone()[0]
-        c.execute("INSERT OR REPLACE INTO game_tags (appid, tag_id, count) VALUES (?, ?, ?)",
-                  (appid, tag_id, count))
-
-    # 2. Developers
-    if developer_str:
-        devs = [d.strip() for d in developer_str.split(',')]
-        for dev_name in devs:
-            c.execute("INSERT OR IGNORE INTO developers (name) VALUES (?)", (dev_name,))
-            c.execute("SELECT id FROM developers WHERE name = ?", (dev_name,))
-            dev_id = c.fetchone()[0]
-            c.execute("INSERT OR REPLACE INTO game_developers (appid, developer_id) VALUES (?, ?)",
-                      (appid, dev_id))
-
-    # 3. Publishers
-    if publisher_str:
-        pubs = [p.strip() for p in publisher_str.split(',')]
-        for pub_name in pubs:
-            c.execute("INSERT OR IGNORE INTO publishers (name) VALUES (?)", (pub_name,))
-            c.execute("SELECT id FROM publishers WHERE name = ?", (pub_name,))
-            pub_id = c.fetchone()[0]
-            c.execute("INSERT OR REPLACE INTO game_publishers (appid, publisher_id) VALUES (?, ?)",
-                      (appid, pub_id))
+    _update_normalized_data(c, appid, tag_list, developer_str, publisher_str)
         
     conn.commit()
     c.execute("SELECT * FROM games WHERE appid = ?", (appid,))
     updated_row = c.fetchone()
     conn.close()
     return dict(updated_row) if updated_row else {}
+
+
+def _update_normalized_data(cursor, appid, tag_list, developer_str, publisher_str):
+    """Update normalized tables for tags, developers, and publishers."""
+    # 1. Tags
+    for tag_name, count in tag_list:
+        cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+        cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+        tag_id = cursor.fetchone()[0]
+        cursor.execute("INSERT OR REPLACE INTO game_tags (appid, tag_id, count) VALUES (?, ?, ?)",
+                       (appid, tag_id, count))
+
+    # 2. Developers
+    if developer_str:
+        devs = [d.strip() for d in developer_str.split(',')]
+        for dev_name in devs:
+            cursor.execute("INSERT OR IGNORE INTO developers (name) VALUES (?)", (dev_name,))
+            cursor.execute("SELECT id FROM developers WHERE name = ?", (dev_name,))
+            dev_id = cursor.fetchone()[0]
+            cursor.execute("INSERT OR REPLACE INTO game_developers (appid, developer_id) VALUES (?, ?)",
+                           (appid, dev_id))
+
+    # 3. Publishers
+    if publisher_str:
+        pubs = [p.strip() for p in publisher_str.split(',')]
+        for pub_name in pubs:
+            cursor.execute("INSERT OR IGNORE INTO publishers (name) VALUES (?)", (pub_name,))
+            cursor.execute("SELECT id FROM publishers WHERE name = ?", (pub_name,))
+            pub_id = cursor.fetchone()[0]
+            cursor.execute("INSERT OR REPLACE INTO game_publishers (appid, publisher_id) VALUES (?, ?)",
+                           (appid, pub_id))
 
 
 def is_100_percent_completed(appid):

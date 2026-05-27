@@ -1,6 +1,13 @@
+import math
 import time
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-from config import GAMES_PER_CATEGORY, CHILL_TAGS
+from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CHILL_TAGS)
+from database import get_metadata
 
 
 def extract_tags(tag_str):
@@ -31,6 +38,288 @@ def extract_tags_with_counts(tag_str):
         else:
             tags[token] = 1.0
     return tags
+
+
+def get_game_weighted_tags(conn, appid):
+    """
+    Fetch tags for a game and calculate their weights directly in logic.
+    Returns (list_of_tags, dict_of_weights).
+    """
+    rows = conn.execute("""
+        SELECT t.name, gt.count
+        FROM game_tags gt
+        JOIN tags t ON gt.tag_id = t.id
+        WHERE gt.appid = ?
+    """, (appid,)).fetchall()
+
+    tags = []
+    raw_counts = {}
+    for r in rows:
+        tags.append(r['name'])
+        raw_counts[r['name']] = r['count']
+
+    if not tags:
+        return [], {}
+
+    # 1. Position weight (Steam tags are ordered by popularity)
+    pos_weights = {}
+    for i, tag in enumerate(tags):
+        # 1.0 for first tag, down to 0.1 for last tag
+        pos_weights[tag] = max(0.1, 1.0 - (i / len(tags)) * 0.9)
+
+    # 2. Relative count weight
+    count_weights = {}
+    max_count = max(raw_counts.values()) if raw_counts else 1
+    default_weight = 0.5
+    for tag in tags:
+        count_weights[tag] = (raw_counts[tag] / max_count) * (1.0 - default_weight) + default_weight
+
+    # 3. Combine
+    weights = {}
+    for tag in tags:
+        combined = pos_weights[tag] * count_weights[tag]
+        weights[tag] = round(max(0.01, min(1.0, combined)), 4)
+
+    return tags, weights
+
+
+def generate_recommendations(conn):
+    """Generate ML-based game recommendations."""
+    now = int(time.time())
+
+    # 2. Rated games (profile)
+    # Include games with either a permanent rating or an active temporary rating
+    rated_db_games = [dict(r) for r in conn.execute("""
+        SELECT * FROM games 
+        WHERE ignored = 0 
+        AND (rating > 0 OR (temp_rating IS NOT NULL AND temp_rating_until > ?))
+    """, (now,)).fetchall()]
+
+    # Apply temporary ratings to the profile
+    for g in rated_db_games:
+        if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
+            g['rating'] = g['temp_rating']
+
+    # 3. Candidate pool
+    min_playtime = int(get_metadata('MIN_PLAYTIME', MIN_PLAYTIME))
+    all_candidates = [dict(r) for r in conn.execute("""
+                                                    SELECT *
+                                                    FROM games
+                                                    WHERE ignored = 0
+                                                      AND (ignore_until = 0 OR ignore_until < ?)
+                                                      AND playtime >= ?
+                                                      AND (tags IS NOT NULL AND tags != '')
+                                                    ORDER BY (temp_rating IS NOT NULL AND temp_rating_until > ?) DESC, 
+                                                             (rating > 0 AND finished = 0) DESC,
+                                                             playtime DESC
+                                                    """, (now, min_playtime, now)).fetchall()]
+
+    # Separate backlog (unfinished) from finished games for recommendation logic
+    # We take enough games to satisfy the requested number of categories
+    num_categories = int(get_metadata('NUM_CATEGORIES', NUM_CATEGORIES))
+    games_per_category = int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY))
+    limit = max(300, num_categories * games_per_category + 50)
+    
+    backlog = [g for g in all_candidates if not g['finished']][:limit]
+    finished_candidates = [g for g in all_candidates if g['finished']]
+
+    if not rated_db_games:
+        return None, None, None, None, None
+
+    # Custom token pattern to keep tags like "action_rpg" and "1990's" intact
+    vectorizer = TfidfVectorizer(stop_words='english', max_features=300, token_pattern=r"(?u)\S+")
+
+    # We will build a list of space-separated tags (without weights) to fit the vectorizer
+    all_tags_list = []
+
+    # We will also keep track of the weight dictionary for each game
+    game_weights = []
+
+    # Set to track metadata tags (dev/pub) to exclude from cluster names
+    meta_tags = set()
+
+    # Profile building
+    for g in rated_db_games:
+        tags, weights = get_game_weighted_tags(conn, g['appid'])
+        if not tags:
+            # Fallback for games with missing normalized tags but having the tags string
+            # This shouldn't happen much with the new filter, but good for robustness
+            tags_dict = extract_tags_with_counts(g.get('tags', ''))
+            tags = list(tags_dict.keys())
+            weights = {t: c/100.0 for t, c in tags_dict.items()}
+
+        s_db = g.get('steam_score')
+        if s_db is None:
+            s_db = 5.0
+        
+        rating = float(g.get('rating') or 0)
+        
+        # Give higher weight to Up Next games in the profile
+        if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
+            weight = rating * 1.5
+        else:
+            diff = -math.fabs(rating - float(s_db))
+            weight = rating * 1.1 + diff
+
+        # Add metadata as tags with max weight
+        if g.get('developer'):
+            devs = [d.strip() for d in g['developer'].split(',')]
+            for dev in devs:
+                dev_tag = dev.replace(' ', '_').lower()
+                if dev_tag not in tags:
+                    tags.append(dev_tag)
+                weights[dev_tag] = 1.0
+                meta_tags.add(dev_tag)
+        if g.get('publisher'):
+            pubs = [p.strip() for p in g['publisher'].split(',')]
+            for pub in pubs:
+                pub_tag = pub.replace(' ', '_').lower()
+                if pub_tag not in tags:
+                    tags.append(pub_tag)
+                weights[pub_tag] = 1.0
+                meta_tags.add(pub_tag)
+
+        # Reconstruct tag string for recommender functions and tfidf
+        # Multiply tags based on their weights to give them more importance in TF-IDF
+        weighted_tags = []
+        for t in tags:
+            w = weights.get(t, 0.5)
+            # Repeat the tag based on weight to influence TF-IDF
+            count = max(1, int(w * 10))
+            weighted_tags.extend([t] * count)
+
+        g['tags'] = " ".join([f"{t}:{weights.get(t, 0.5)*100}" for t in tags]) # Re-add counts for build_explanation compatibility
+        g['weight'] = weight
+        all_tags_list.append(" ".join(weighted_tags))
+        game_weights.append({"weight": weight, "tag_weights": weights})
+
+    # Backlog prep
+    for g in backlog + finished_candidates:
+        tags, weights = get_game_weighted_tags(conn, g['appid'])
+        if not tags:
+            tags_dict = extract_tags_with_counts(g.get('tags', ''))
+            tags = list(tags_dict.keys())
+            weights = {t: c/100.0 for t, c in tags_dict.items()}
+
+        if g['difficulty'] and g['difficulty'] != 'Easy':
+            diff_tag = str(g['difficulty']).replace(' ', '_').lower()
+            if diff_tag not in tags:
+                tags.append(diff_tag)
+            weights[diff_tag] = 0.8 # High weight but not absolute
+
+        # Reconstruct tag string for recommender functions and tfidf
+        weighted_tags = []
+        for t in tags:
+            w = weights.get(t, 0.5)
+            count = max(1, int(w * 10))
+            weighted_tags.extend([t] * count)
+
+        g['tags'] = " ".join([f"{t}:{weights.get(t, 0.5)*100}" for t in tags])
+        all_tags_list.append(" ".join(weighted_tags))
+
+    # Vectorize
+    tfidf_matrix = vectorizer.fit_transform(all_tags_list)
+    
+    rated_count = len(rated_db_games)
+    rated_matrix = tfidf_matrix[:rated_count]
+    candidate_matrix = tfidf_matrix[rated_count:]
+
+    # Weight the profile matrix
+    weighted_profile_rows = []
+    total_profile_weight = 0
+    for i in range(rated_count):
+        row = rated_matrix[i].toarray()[0]
+        # Multiply by user rating weight
+        w = max(0, game_weights[i]['weight'])
+        weighted_row = row * w
+        weighted_profile_rows.append(weighted_row)
+        total_profile_weight += w
+    
+    if total_profile_weight > 0:
+        user_profile_vector = np.sum(weighted_profile_rows, axis=0).reshape(1, -1)
+        # Normalize sum by weight instead of simple mean to preserve stronger signals
+        user_profile_vector = user_profile_vector / total_profile_weight
+    else:
+        user_profile_vector = np.mean(weighted_profile_rows, axis=0).reshape(1, -1)
+    
+    # Calculate similarity
+    similarities = cosine_similarity(user_profile_vector, candidate_matrix)[0]
+    
+    # Apply a small boost for games the user has already played (replay value)
+    # Replay value is high if the user rated it high but hasn't finished it
+    # Map back to candidates
+    for i, g in enumerate(backlog + finished_candidates):
+        score = float(similarities[i] * 100)
+        
+        # Boost for highly rated unfinished games (replays)
+        if g['rating'] >= 7 and not g['finished']:
+            score += 5.0
+            
+        g['match_score'] = score
+
+    # Sort backlog by match score
+    backlog.sort(key=lambda x: x['match_score'], reverse=True)
+    df_backlog = pd.DataFrame(backlog)
+    df_finished = pd.DataFrame(finished_candidates)
+
+    return df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags
+
+
+def build_recommendations_html(conn, show_finished=False):
+    """Complete pipeline to generate recommendation HTML."""
+    df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, meta_tags = generate_recommendations(conn)
+    
+    if df_backlog is None:
+        return "<h2>Please rate some games first!</h2>"
+
+    # Persistent columns
+    html, shown_appids = build_persistent_sections(
+        df_backlog, df_finished, rated_db_games, vectorizer, tfidf_matrix, rated_count, 
+        show_finished=show_finished
+    )
+
+    # Clustering for remaining games
+    remaining = df_backlog[~df_backlog['appid'].isin(shown_appids)].copy()
+    num_categories = int(get_metadata('NUM_CATEGORIES', NUM_CATEGORIES))
+    
+    if not remaining.empty:
+        # If we have fewer games than requested categories, reduce category count
+        actual_num_clusters = min(num_categories, len(remaining))
+        
+        # Re-vectorize remaining to get better clusters
+        rem_tags = [" ".join(extract_tags(t)) for t in remaining['tags']]
+        rem_tfidf = vectorizer.transform(rem_tags)
+        
+        kmeans = KMeans(n_clusters=actual_num_clusters, n_init=10, random_state=42)
+        remaining['cluster'] = kmeans.fit_predict(rem_tfidf)
+        
+        # Get top terms for each cluster to name them
+        feature_names = vectorizer.get_feature_names_out()
+        cluster_centers = kmeans.cluster_centers_
+        
+        for i in range(actual_num_clusters):
+            cluster_data = remaining[remaining['cluster'] == i].head(int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY)))
+            if cluster_data.empty:
+                continue
+            
+            # Name the cluster based on top TF-IDF terms (excluding meta_tags)
+            top_indices = cluster_centers[i].argsort()[::-1]
+            top_terms = []
+            for idx in top_indices:
+                term = feature_names[idx]
+                if term not in meta_tags and term not in ['game', 'games', 'indie', 'singleplayer']:
+                    top_terms.append(term.replace('_', ' ').title())
+                if len(top_terms) >= 2:
+                    break
+            
+            title = " & ".join(top_terms) if top_terms else f"Collection {i+1}"
+            
+            html += f'<div class="column"><div class="col-title">{title}</div>'
+            for _, r in cluster_data.iterrows():
+                html += render_game_card(r.to_dict(), rated_db_games, vectorizer, tfidf_matrix, rated_count)
+            html += '</div>'
+
+    return html
 
 
 def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated_start_idx):
