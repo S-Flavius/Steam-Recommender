@@ -51,16 +51,9 @@ def get_carousel_html(conn):
 
         part = f'''
         <div class="rate-card" data-appid="{g['appid']}">
-            <div class="btn-group">
-                {finish_btn}
-                <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({g['appid']}, 'up_next', this)">Next</button>
-                <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
-                <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
-                <a href="https://store.steampowered.com/app/{g['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
-            </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{g['appid']}/header.jpg">
             <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start; justify-content: center;">
-                <b style="color: white; font-size: 0.85em; line-height: 1.2;">{g['name']}{flag}{up_next_badge}</b>
+                <b style="color: white; font-size: 0.85em; line-height: 1.2; text-align: center;">{g['name']}{flag}{up_next_badge}</b>
             </div>
             <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px;">
                 <div style="display:flex; align-items:center; gap:6px;">
@@ -71,6 +64,13 @@ def get_carousel_html(conn):
                            onchange="rateCard({g['appid']}, this)">
                     <span style="font-weight: 800; color: var(--accent); min-width: 14px; font-size: 0.8em;">{rating}</span>
                 </div>
+            </div>
+            <div class="btn-group">
+                {finish_btn}
+                <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({g['appid']}, 'up_next', this)">Next</button>
+                <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
+                <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
+                <a href="https://store.steampowered.com/app/{g['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
             </div>
         </div>'''
         html_parts.append(part)

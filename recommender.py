@@ -434,15 +434,8 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
     rating_val = int(r['rating'] or 0)
     return f'''
         <div class="game-card" data-appid="{r['appid']}">
-            <div class="btn-group">
-                {finish_btn}
-                <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({r['appid']}, 'up_next', this)">Next</button>
-                <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({r['appid']}, 'ignore', this)">Ignore</button>
-                <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({r['appid']}, 'ban', this)">Ban</button>
-                <a href="https://store.steampowered.com/app/{r['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
-            </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{r['appid']}/header.jpg">
-            <div style="padding: 2px;">
+            <div style="padding: 2px; flex-grow: 1; display: flex; flex-direction: column;">
                 <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start;">
                     <b style="color: white; font-size: 0.85em; line-height: 1.2;">{r['name']}{replay_flag}</b>
                 </div>
@@ -461,8 +454,15 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
                         <span style="font-weight:800; color:var(--accent); min-width:14px; font-size: 0.8em;">{rating_val}</span>
                     </div>
                 </div>
-                <button class="why-toggle" style="font-size: 0.7em; padding: 4px 8px;" onclick="toggleWhy(this)">Why?</button>
+                <button class="why-toggle" style="font-size: 0.7em; padding: 4px 8px; width: fit-content;" onclick="toggleWhy(this)">Why?</button>
                 <div class="why-box">{why_html}</div>
+                <div class="btn-group">
+                    {finish_btn}
+                    <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({r['appid']}, 'up_next', this)">Next</button>
+                    <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({r['appid']}, 'ignore', this)">Ignore</button>
+                    <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({r['appid']}, 'ban', this)">Ban</button>
+                    <a href="https://store.steampowered.com/app/{r['appid']}" target="_blank" class="icon-btn btn-steam" title="Steam Page" style="text-decoration: none; text-align: center;">Steam</a>
+                </div>
             </div>
         </div>'''
 
