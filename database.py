@@ -103,7 +103,8 @@ def init_db():
         'MIN_PLAYTIME': str(MIN_PLAYTIME),
         'CAROUSEL_SIZE': str(CAROUSEL_SIZE),
         'IGNORE_DURATION_DAYS': str(IGNORE_DURATION_DAYS),
-        'UP_NEXT_DURATION_DAYS': str(UP_NEXT_DURATION_DAYS)
+        'UP_NEXT_DURATION_DAYS': str(UP_NEXT_DURATION_DAYS),
+        'SHOW_FINISHED': '0'
     }
     for key, value in defaults.items():
         c.execute('INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)', (key, value))

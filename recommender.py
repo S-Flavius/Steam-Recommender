@@ -114,17 +114,17 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
 
 def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
     """Render a single game card HTML (used by both persistent and dynamic columns)."""
-    replay_flag = " (replay)" if (r.get('rating', 0) > 0 and not r.get('finished', 0)) else ""
+    replay_flag = " (replay)" if (r['rating'] > 0 and not r['finished']) else ""
     reasons = build_explanation(r, rated_db_games, vectorizer, tfidf, rated_start_idx)
     why_html = "".join(f"<span>{reason}</span>" for reason in reasons)
 
     # Determine which finish button to show
-    if not r.get('finished'):
+    if not r['finished']:
         finish_btn = f'<button class="icon-btn btn-finish" onclick="finishGame({r["appid"]}, this)">Finish</button>'
     else:
-        finish_btn = f'<button class="icon-btn btn-unfinish" onclick="updateGame({r["appid"]}, \'unfinish\', this)">Unfinish</button>'
+        finish_btn = f'<button class="icon-btn btn-unfinish" onclick="unfinishGame({r["appid"]}, this)">Unfinish</button>'
 
-    rating_val = int(r.get('rating') or 0)
+    rating_val = int(r['rating'] or 0)
     return f'''
         <div class="game-card">
             <div class="btn-group">
@@ -152,10 +152,10 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
         </div>'''
 
 
-def build_persistent_sections(df_backlog, rated_db_games, vectorizer, tfidf, rated_start_idx):
+def build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorizer, tfidf, rated_start_idx, show_finished=False):
     """
     Build the HTML for the always-present categories:
-    Top Games, Hard Games, Chill Games, Recently Played Unfinished, Forgotten Games.
+    Top Games, Hard Games, Chill Games, Recently Played Unfinished, Finished Games, Forgotten Games.
     Returns (html_string, set_of_appids_already_shown).
     """
     sections = []
@@ -192,10 +192,16 @@ def build_persistent_sections(df_backlog, rated_db_games, vectorizer, tfidf, rat
     chill_rows = df_backlog[chill_mask].head(GAMES_PER_CATEGORY)
     sections.append(make_column("Chill Games", chill_rows))
 
-    # Recently Played Unfinished - unfinished games played within last 30 days
+    # Recently Played - unfinished games played within last 30 days
     recent_mask = (df_backlog['finished'] == 0) & (df_backlog['last_played'] > now - 30 * 24 * 3600)
     recent_rows = df_backlog[recent_mask].sort_values('last_played', ascending=False).head(GAMES_PER_CATEGORY)
-    sections.append(make_column("Recently Played Unfinished", recent_rows))
+    sections.append(make_column("Recently Played", recent_rows))
+
+    # Finished Games - to allow marking as unfinished
+    # These were separated in app.py to prevent them from appearing in other columns
+    if show_finished:
+        finished_rows = df_finished.sort_values('last_played', ascending=False).head(GAMES_PER_CATEGORY)
+        sections.append(make_column("Finished Games", finished_rows))
 
     # Forgotten Games - unfinished games not played in over 1 year
     forgotten_mask = (df_backlog['finished'] == 0) & (df_backlog['last_played'] < now - 365 * 24 * 3600)

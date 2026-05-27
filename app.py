@@ -43,9 +43,22 @@ def _background_sync():
             _sync_in_progress = False
 
 
-def get_carousel_html():
+def get_unrated_count(conn):
+    """Get the total count of unrated games that are not ignored."""
+    now = int(time.time())
+    row = conn.execute("""
+        SELECT COUNT(*) as count
+        FROM games
+        WHERE rating = 0
+          AND ignored = 0
+          AND (ignore_until = 0 OR ignore_until < ?)
+          AND (temp_rating IS NULL OR temp_rating_until < ?)
+    """, (now, now)).fetchone()
+    return row['count'] if row else 0
+
+
+def get_carousel_html(conn):
     """Build HTML for the rating carousel of unrated games."""
-    conn = get_db()
     carousel_size = int(get_metadata('CAROUSEL_SIZE', CAROUSEL_SIZE))
     games = conn.execute("""
                          SELECT *
@@ -63,10 +76,17 @@ def get_carousel_html():
     for g in games:
         rating = g['rating'] or 0
         flag = " (Finished)" if g['finished'] else ""
+        
+        # Determine which finish button to show
+        if not g['finished']:
+            finish_btn = f'<button class="icon-btn btn-finish" onclick="updateGame({g["appid"]}, \'finish\', this)">Finish</button>'
+        else:
+            finish_btn = f'<button class="icon-btn btn-unfinish" onclick="updateGame({g["appid"]}, \'unfinish\', this)">Unfinish</button>'
+
         part = f'''
         <div class="rate-card" data-appid="{g['appid']}">
             <div class="btn-group">
-                <button class="icon-btn btn-finish" onclick="updateGame({g['appid']}, 'finish', this)">Finish</button>
+                {finish_btn}
                 <button class="icon-btn btn-up-next" onclick="updateGame({g['appid']}, 'up_next', this)">Up Next</button>
                 <button class="icon-btn btn-ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
                 <button class="icon-btn btn-ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
@@ -77,7 +97,6 @@ def get_carousel_html():
             <span style="font-weight: bold; color: #66c0f4;">{rating}</span>
         </div>'''
         html_parts.append(part)
-    conn.close()
     return "".join(html_parts)
 
 
@@ -90,7 +109,11 @@ def index():
     threading.Thread(target=_background_sync, daemon=True).start()
 
     cleanup_expired_temp_ratings()
-    return render_template('index.html', carousel_html=get_carousel_html())
+    conn = get_db()
+    unrated_count = get_unrated_count(conn)
+    carousel_html = get_carousel_html(conn)
+    conn.close()
+    return render_template('index.html', carousel_html=carousel_html, unrated_count=unrated_count)
 
 
 @app.route('/update_game', methods=['POST'])
@@ -176,13 +199,14 @@ def settings():
             'CAROUSEL_SIZE': int(get_metadata('CAROUSEL_SIZE', CAROUSEL_SIZE)),
             'IGNORE_DURATION_DAYS': int(get_metadata('IGNORE_DURATION_DAYS', IGNORE_DURATION_DAYS)),
             'UP_NEXT_DURATION_DAYS': int(get_metadata('UP_NEXT_DURATION_DAYS', UP_NEXT_DURATION_DAYS)),
+            'SHOW_FINISHED': int(get_metadata('SHOW_FINISHED', '0')),
             'STEAM_ID': get_metadata('STEAM_ID', os.getenv("STEAM_ID", "")),
             'CEDB_USER_ID': get_metadata('CEDB_USER_ID', os.getenv("CEDB_USER_ID", ""))
         })
 
     data = request.json
     for key in ['NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 
-                'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS', 'STEAM_ID', 'CEDB_USER_ID']:
+                'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS', 'SHOW_FINISHED', 'STEAM_ID', 'CEDB_USER_ID']:
         if key in data:
             set_metadata(key, data[key])
     
@@ -266,15 +290,22 @@ def recommend():
                                                     FROM games
                                                     WHERE ignored = 0
                                                       AND (ignore_until = 0 OR ignore_until < ?)
-                                                      AND finished = 0
                                                       AND playtime >= ?
                                                     """, (int(time.time()), min_playtime)).fetchall()]
 
-    backlog = all_candidates[:150]
+    # Separate backlog (unfinished) from finished games for recommendation logic
+    backlog = [g for g in all_candidates if not g['finished']][:150]
+    finished_candidates = [g for g in all_candidates if g['finished']]
 
     if not rated_db_games:
+        unrated_count = get_unrated_count(conn)
+        carousel_html = get_carousel_html(conn)
         conn.close()
-        return jsonify({"results_html": "<h2>Please rate some games first!</h2>", "carousel_html": get_carousel_html()})
+        return jsonify({
+            "results_html": "<h2>Please rate some games first!</h2>",
+            "carousel_html": carousel_html,
+            "unrated_count": unrated_count
+        })
 
     # Custom token pattern to keep tags like "action_rpg" and "1990's" intact
     vectorizer = TfidfVectorizer(stop_words='english', max_features=300, token_pattern=r"(?u)\S+")
@@ -324,7 +355,7 @@ def recommend():
         game_weights.append({"weight": weight, "tag_weights": weights})
 
     # Backlog prep
-    for g in backlog:
+    for g in backlog + finished_candidates:
         tags, weights = get_game_weighted_tags(conn, g['appid'])
 
         if g['difficulty'] and g['difficulty'] != 'Easy':
@@ -355,7 +386,7 @@ def recommend():
         if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
             g['rating'] = g['temp_rating']
 
-        priority_boost = 1.25 if (float(g.get('rating') or 0) > 0 and not g.get('finished', 0)) else 1.0
+        priority_boost = 1.25 if (float(g['rating'] or 0) > 0 and not g['finished']) else 1.0
 
         g['tags'] = " ".join([f"{t}:{weights[t]*100}" for t in tags]) # Re-add counts for build_explanation compatibility
         all_tags_list.append(" ".join(tags))
@@ -389,7 +420,17 @@ def recommend():
 
     # Matching
     backlog_vecs = tfidf[len(rated_db_games):]
-    df_backlog['match_score'] = cosine_similarity(backlog_vecs, user_vec).flatten() * 80
+    
+    # Separate vectors for backlog and finished
+    backlog_vecs_only = backlog_vecs[:len(backlog)]
+    finished_vecs_only = backlog_vecs[len(backlog):]
+
+    df_backlog['match_score'] = cosine_similarity(backlog_vecs_only, user_vec).flatten() * 80
+    df_finished = pd.DataFrame(finished_candidates)
+    if not df_finished.empty:
+        df_finished['match_score'] = cosine_similarity(finished_vecs_only, user_vec).flatten() * 80
+    else:
+        df_finished['match_score'] = []
 
     for i in range(len(df_backlog)):
         df_backlog.loc[i, 'match_score'] *= game_weights[len(rated_db_games) + i]["priority_boost"]
@@ -397,17 +438,26 @@ def recommend():
     # Add rating bonus
     df_backlog['match_score'] += df_backlog['rating'].fillna(0).astype(float) * 2.0
     df_backlog['match_score'] = np.clip(df_backlog['match_score'], 0, 100)
+    
+    if not df_finished.empty:
+        df_finished['match_score'] += df_finished['rating'].fillna(0).astype(float) * 2.0
+        df_finished['match_score'] = np.clip(df_finished['match_score'], 0, 100)
 
-    if df_backlog.empty:
+    if df_backlog.empty and df_finished.empty:
+        unrated_count = get_unrated_count(conn)
+        carousel_html = get_carousel_html(conn)
         conn.close()
-        return jsonify(
-            {"results_html": "<h2>No matches found. Try rating more games!</h2>", "carousel_html": get_carousel_html()})
+        return jsonify({
+            "results_html": "<h2>No matches found. Try rating more games!</h2>",
+            "carousel_html": carousel_html,
+            "unrated_count": unrated_count
+        })
 
     # Clustering
     num_categories = int(get_metadata('NUM_CATEGORIES', NUM_CATEGORIES))
     num_clusters = min(num_categories, len(df_backlog) // 2) or 1
     kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
-    df_backlog['cluster'] = kmeans.fit_predict(backlog_vecs)
+    df_backlog['cluster'] = kmeans.fit_predict(backlog_vecs_only)
 
     terms = vectorizer.get_feature_names_out()
     names = {}
@@ -429,13 +479,14 @@ def recommend():
 
     df_backlog['category'] = df_backlog['cluster'].map(names)
 
-    # Sort after assigning clusters so predictions align correctly with backlog_vecs
+    # Sort after assigning clusters so predictions align correctly with backlog_vecs_only
     df_backlog = df_backlog.sort_values(by='match_score', ascending=False)
 
     # Build HTML
     # 1. Persistent categories first
-    persistent_html, shown_app_ids = build_persistent_sections(df_backlog, rated_db_games, vectorizer, tfidf,
-                                                               rated_start_idx)
+    show_finished = get_metadata('SHOW_FINISHED', '0') == '1'
+    persistent_html, shown_app_ids = build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorizer, tfidf,
+                                                               rated_start_idx, show_finished=show_finished)
 
     # 2. Dynamic cluster columns
     res_html = persistent_html
@@ -449,8 +500,10 @@ def recommend():
             res_html += render_game_card(r.to_dict(), rated_db_games, vectorizer, tfidf, rated_start_idx)
         res_html += '</div>'
 
+    unrated_count = get_unrated_count(conn)
+    carousel_html = get_carousel_html(conn)
     conn.close()
-    return jsonify({"results_html": res_html, "carousel_html": get_carousel_html()})
+    return jsonify({"results_html": res_html, "carousel_html": carousel_html, "unrated_count": unrated_count})
 
 
 if __name__ == "__main__":

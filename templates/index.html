@@ -5,7 +5,7 @@
     <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
 </head>
 <body>
-<h1>Rate & Categorize Your Backlog <button class="why-toggle" onclick="toggleSettings()">Settings</button></h1>
+<h1>Rate & Categorize Your Backlog <span id="unratedCount" style="font-size: 0.5em; color: #66c0f4; vertical-align: middle;">({{ unrated_count }} left to rate)</span> <button class="why-toggle" onclick="toggleSettings()">Settings</button></h1>
 <div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
 
 <div id="settingsPanel" style="display: none; background: #1b2838; padding: 20px; border-radius: 8px; margin: 20px auto; max-width: 600px; border: 1px solid #2a475e;">
@@ -34,6 +34,12 @@
         
         <label>Up Next Duration (days):</label>
         <input type="number" id="conf_UP_NEXT_DURATION_DAYS" style="background: #2a475e; color: white; border: none; padding: 5px;">
+        
+        <label>Show Finished Games Column:</label>
+        <select id="conf_SHOW_FINISHED" style="background: #2a475e; color: white; border: none; padding: 5px;">
+            <option value="0">No</option>
+            <option value="1">Yes</option>
+        </select>
     </div>
     <div style="margin-top: 15px; text-align: right;">
         <button class="why-toggle" onclick="toggleSettings()">Cancel</button>
@@ -59,9 +65,18 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
         }).then(() => {
-            if (action !== 'rate') {
+            if (action !== 'rate' && action !== 'unfinish') {
                 card.style.opacity = '0';
                 setTimeout(() => card.remove(), 300);
+                
+                // Decrement count
+                const countEl = document.getElementById('unratedCount');
+                if (countEl) {
+                    let current = parseInt(countEl.textContent.match(/\d+/)[0]);
+                    if (current > 0) {
+                        countEl.textContent = `(${current - 1} left to rate)`;
+                    }
+                }
             } else {
                 card.style.opacity = '1';
             }
@@ -79,6 +94,15 @@
         let ratingSlider = card.querySelector('input[type="range"]');
         let ratingValue = ratingSlider ? parseInt(ratingSlider.value) : 0;
         updateGame(appid, 'finish', btn, ratingValue);
+    }
+
+    function unfinishGame(appid, btn) {
+        updateGame(appid, 'unfinish', btn);
+        // We might want to reload recommendations to see it back in backlog,
+        // or just let the user re-train. For now, just show it's done.
+        setTimeout(() => {
+            generateRecommendations();
+        }, 500);
     }
 
     function toggleWhy(btn) {
@@ -105,7 +129,7 @@
     }
 
     function saveSettings() {
-        const keys = ['STEAM_ID', 'CEDB_USER_ID', 'NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS'];
+        const keys = ['STEAM_ID', 'CEDB_USER_ID', 'NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS', 'SHOW_FINISHED'];
         const payload = {};
         keys.forEach(k => {
             payload[k] = document.getElementById('conf_' + k).value;
@@ -148,6 +172,12 @@
                 loading.style.display = 'none';
                 results.innerHTML = data.results_html;
                 document.getElementById('carousel').innerHTML = data.carousel_html;
+                
+                // Update count
+                const countEl = document.getElementById('unratedCount');
+                if (countEl && data.unrated_count !== undefined) {
+                    countEl.textContent = `(${data.unrated_count} left to rate)`;
+                }
             })
             .catch(err => {
                 console.error("AI Training Failed:", err);
