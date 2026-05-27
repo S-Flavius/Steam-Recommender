@@ -79,22 +79,30 @@ def get_carousel_html(conn):
         
         # Determine which finish button to show
         if not g['finished']:
-            finish_btn = f'<button class="icon-btn btn-finish" onclick="updateGame({g["appid"]}, \'finish\', this)">Finish</button>'
+            finish_btn = f'<button class="icon-btn btn-finish" title="Finish" onclick="updateGame({g["appid"]}, \'finish\', this)">Done</button>'
         else:
-            finish_btn = f'<button class="icon-btn btn-unfinish" onclick="updateGame({g["appid"]}, \'unfinish\', this)">Unfinish</button>'
+            finish_btn = f'<button class="icon-btn btn-unfinish" title="Unfinish" onclick="updateGame({g["appid"]}, \'unfinish\', this)">Revive</button>'
 
         part = f'''
         <div class="rate-card" data-appid="{g['appid']}">
             <div class="btn-group">
                 {finish_btn}
-                <button class="icon-btn btn-up-next" onclick="updateGame({g['appid']}, 'up_next', this)">Up Next</button>
-                <button class="icon-btn btn-ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
-                <button class="icon-btn btn-ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
+                <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({g['appid']}, 'up_next', this)">Next</button>
+                <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({g['appid']}, 'ignore', this)">Ignore</button>
+                <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({g['appid']}, 'ban', this)">Ban</button>
             </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{g['appid']}/header.jpg">
-            <p style="font-size: 0.9em; margin: 5px 0;">{g['name']}{flag}</p>
-            <input type="range" class="rate-slider" data-appid="{g['appid']}" min="0" max="10" value="{rating}" oninput="this.nextElementSibling.innerText = this.value">
-            <span style="font-weight: bold; color: #66c0f4;">{rating}</span>
+            <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start; justify-content: center;">
+                <b style="color: white; font-size: 0.85em; line-height: 1.2;">{g['name']}{flag}</b>
+            </div>
+            <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <input type="range" class="rate-slider" data-appid="{g['appid']}" min="0" max="10" value="{rating}" 
+                           style="flex:1; accent-color:var(--accent); cursor: pointer; height: 4px;"
+                           oninput="this.nextElementSibling.innerText = this.value">
+                    <span style="font-weight: 800; color: var(--accent); min-width: 14px; font-size: 0.8em;">{rating}</span>
+                </div>
+            </div>
         </div>'''
         html_parts.append(part)
     return "".join(html_parts)
@@ -179,7 +187,8 @@ def update_game():
         conn.execute("""
                      UPDATE games
                      SET temp_rating       = 10,
-                         temp_rating_until = ?
+                         temp_rating_until = ?,
+                         ignore_until      = 0
                      WHERE appid = ?
                      """, (now + duration, appid))
 
@@ -275,10 +284,15 @@ def recommend():
     conn.commit()
 
     # 2. Rated games (profile)
-    rated_db_games = [dict(r) for r in conn.execute("SELECT * FROM games WHERE rating > 0 AND ignored = 0").fetchall()]
-
-    # Apply temporary ratings
+    # Include games with either a permanent rating or an active temporary rating
     now = int(time.time())
+    rated_db_games = [dict(r) for r in conn.execute("""
+        SELECT * FROM games 
+        WHERE ignored = 0 
+        AND (rating > 0 OR (temp_rating IS NOT NULL AND temp_rating_until > ?))
+    """, (now,)).fetchall()]
+
+    # Apply temporary ratings to the profile
     for g in rated_db_games:
         if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
             g['rating'] = g['temp_rating']
@@ -291,10 +305,11 @@ def recommend():
                                                     WHERE ignored = 0
                                                       AND (ignore_until = 0 OR ignore_until < ?)
                                                       AND playtime >= ?
-                                                    """, (int(time.time()), min_playtime)).fetchall()]
+                                                    ORDER BY (temp_rating IS NOT NULL AND temp_rating_until > ?) DESC, playtime DESC
+                                                    """, (int(time.time()), min_playtime, int(time.time()))).fetchall()]
 
     # Separate backlog (unfinished) from finished games for recommendation logic
-    backlog = [g for g in all_candidates if not g['finished']][:150]
+    backlog = [g for g in all_candidates if not g['finished']][:300]
     finished_candidates = [g for g in all_candidates if g['finished']]
 
     if not rated_db_games:
@@ -327,8 +342,14 @@ def recommend():
         if s_db is None:
             s_db = 5.0
         
-        diff = -math.fabs(float(g.get('rating') or 0) - float(s_db))
-        weight = float(g.get('rating') or 0) * 1.1 + diff
+        rating = float(g.get('rating') or 0)
+        
+        # Give higher weight to Up Next games in the profile
+        if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
+            weight = rating * 1.5
+        else:
+            diff = -math.fabs(rating - float(s_db))
+            weight = rating * 1.1 + diff
 
         # Add metadata as tags with max weight
         if g.get('developer'):
@@ -386,7 +407,12 @@ def recommend():
         if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
             g['rating'] = g['temp_rating']
 
-        priority_boost = 1.25 if (float(g['rating'] or 0) > 0 and not g['finished']) else 1.0
+        priority_boost = 1.0
+        if float(g['rating'] or 0) > 0 and not g['finished']:
+            if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
+                priority_boost = 5.0  # Massive boost for "Up Next" games
+            else:
+                priority_boost = 1.25 # Standard boost for played but unfinished games
 
         g['tags'] = " ".join([f"{t}:{weights[t]*100}" for t in tags]) # Re-add counts for build_explanation compatibility
         all_tags_list.append(" ".join(tags))

@@ -1,49 +1,66 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Backlog Recommender</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
     <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
 </head>
 <body>
-<h1>Rate & Categorize Your Backlog <span id="unratedCount" style="font-size: 0.5em; color: #66c0f4; vertical-align: middle;">({{ unrated_count }} left to rate)</span> <button class="why-toggle" onclick="toggleSettings()">Settings</button></h1>
-<div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
+<div class="main-container">
+    <h1>
+        Rate & Categorize Your Backlog
+        <span id="unratedCount" style="font-size: 0.4em; color: var(--accent); opacity: 0.8;">({{ unrated_count }} left to rate)</span>
+        <button class="why-toggle" onclick="openModal()" style="margin-left: auto; font-size: 0.6em; padding: 6px 15px;">Settings</button>
+    </h1>
+    
+    <div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
 
-<div id="settingsPanel" style="display: none; background: #1b2838; padding: 20px; border-radius: 8px; margin: 20px auto; max-width: 600px; border: 1px solid #2a475e;">
-    <h3>User Configuration</h3>
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-        <label>Steam ID:</label>
-        <input type="text" id="conf_STEAM_ID" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>CEDB User ID:</label>
-        <input type="text" id="conf_CEDB_USER_ID" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Number of Categories:</label>
-        <input type="number" id="conf_NUM_CATEGORIES" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Games per Category:</label>
-        <input type="number" id="conf_GAMES_PER_CATEGORY" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Min Playtime (mins):</label>
-        <input type="number" id="conf_MIN_PLAYTIME" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Carousel Size:</label>
-        <input type="number" id="conf_CAROUSEL_SIZE" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Ignore Duration (days):</label>
-        <input type="number" id="conf_IGNORE_DURATION_DAYS" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Up Next Duration (days):</label>
-        <input type="number" id="conf_UP_NEXT_DURATION_DAYS" style="background: #2a475e; color: white; border: none; padding: 5px;">
-        
-        <label>Show Finished Games Column:</label>
-        <select id="conf_SHOW_FINISHED" style="background: #2a475e; color: white; border: none; padding: 5px;">
-            <option value="0">No</option>
-            <option value="1">Yes</option>
-        </select>
-    </div>
-    <div style="margin-top: 15px; text-align: right;">
-        <button class="why-toggle" onclick="toggleSettings()">Cancel</button>
-        <button class="why-toggle" style="background: #66c0f4; color: #121a25;" onclick="saveSettings()">Save & Reload</button>
+<!-- Settings Modal -->
+<div id="settingsModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Settings</h3>
+            <span class="close" onclick="closeModal()">&times;</span>
+        </div>
+        <div class="settings-grid">
+            <label>Steam ID</label>
+            <input type="text" id="conf_STEAM_ID">
+            
+            <label>CEDB User ID</label>
+            <input type="text" id="conf_CEDB_USER_ID">
+            
+            <label>No. of Categories</label>
+            <input type="number" id="conf_NUM_CATEGORIES">
+            
+            <label>Games / Category</label>
+            <input type="number" id="conf_GAMES_PER_CATEGORY">
+            
+            <label>Min Playtime (m)</label>
+            <input type="number" id="conf_MIN_PLAYTIME">
+            
+            <label>Carousel Size</label>
+            <input type="number" id="conf_CAROUSEL_SIZE">
+            
+            <label>Ignore (days)</label>
+            <input type="number" id="conf_IGNORE_DURATION_DAYS">
+            
+            <label>Up Next (days)</label>
+            <input type="number" id="conf_UP_NEXT_DURATION_DAYS">
+            
+            <label>Show Finished</label>
+            <select id="conf_SHOW_FINISHED">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+            </select>
+        </div>
+        <div class="modal-footer">
+            <button class="why-toggle" onclick="closeModal()">Cancel</button>
+            <button class="why-toggle" style="background: var(--accent); color: white; border: none;" onclick="saveSettings()">Save & Reload</button>
+        </div>
     </div>
 </div>
 
@@ -51,6 +68,7 @@
 <div class="loading-text" id="loading">AI is crunching the data... Please wait...</div>
 
 <div class="board" id="results"></div>
+</div>
 
 <script>
     function updateGame(appid, action, btn, value = null) {
@@ -69,6 +87,12 @@
                 card.style.opacity = '0';
                 setTimeout(() => card.remove(), 300);
                 
+                // If it was "Up Next", we should probably trigger a re-recommendation
+                // because it needs to move from carousel/somewhere to Top Games
+                if (action === 'up_next') {
+                    setTimeout(() => generateRecommendations(), 500);
+                }
+
                 // Decrement count
                 const countEl = document.getElementById('unratedCount');
                 if (countEl) {
@@ -111,20 +135,27 @@
         btn.textContent = box.classList.contains('open') ? 'Hide' : 'Why?';
     }
 
-    function toggleSettings() {
-        const panel = document.getElementById('settingsPanel');
-        if (panel.style.display === 'none') {
-            fetch('/settings')
-                .then(res => res.json())
-                .then(data => {
-                    for (const key in data) {
-                        const el = document.getElementById('conf_' + key);
-                        if (el) el.value = data[key];
-                    }
-                    panel.style.display = 'block';
-                });
-        } else {
-            panel.style.display = 'none';
+    function openModal() {
+        const modal = document.getElementById('settingsModal');
+        fetch('/settings')
+            .then(res => res.json())
+            .then(data => {
+                for (const key in data) {
+                    const el = document.getElementById('conf_' + key);
+                    if (el) el.value = data[key];
+                }
+                modal.style.display = 'block';
+            });
+    }
+
+    function closeModal() {
+        document.getElementById('settingsModal').style.display = 'none';
+    }
+
+    window.onclick = function(event) {
+        const modal = document.getElementById('settingsModal');
+        if (event.target == modal) {
+            closeModal();
         }
     }
 

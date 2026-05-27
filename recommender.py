@@ -78,7 +78,10 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
 
     # 4. You've played it before but never finished
     if rating > 0 and not finished:
-        reasons.append(f"You played this (rated {rating}/10) but never finished it")
+        if candidate.get('temp_rating'):
+            reasons.append("Marked as <b>Up Next</b>")
+        else:
+            reasons.append(f"You played this (rated {rating}/10) but never finished it")
 
     # 5. Long playtime already invested
     if playtime > 600 and not finished:
@@ -96,14 +99,10 @@ def build_explanation(candidate, rated_db_games, vectorizer, tfidf_matrix, rated
 
     highlight_tags = [t for t in cand_tags if liked_tags.get(t, 0) >= 0.5]
     
-    # Filter out metadata tags from highlights if they appear there (dev/pub)
-    # We don't have meta_tags here easily, but we can try to filter out tags that aren't in liked_tags but were added in app.py
-    # Actually, if it's in liked_tags, it's fine to show.
-    
     highlight_tags.sort(key=lambda t: liked_tags.get(t, 0), reverse=True)
     if highlight_tags:
         # Filter out common/uninteresting tags if needed, but for now just show top ones
-        tag_str = ", ".join(t.replace("_", " ").title() for t in highlight_tags[:10])
+        tag_str = ", ".join(t.replace("_", " ").title() for t in highlight_tags[:5])
         reasons.append(f"Matches your taste in: {tag_str}")
 
     if not reasons:
@@ -120,33 +119,38 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
 
     # Determine which finish button to show
     if not r['finished']:
-        finish_btn = f'<button class="icon-btn btn-finish" onclick="finishGame({r["appid"]}, this)">Finish</button>'
+        finish_btn = f'<button class="icon-btn btn-finish" title="Finish" onclick="finishGame({r["appid"]}, this)">Done</button>'
     else:
-        finish_btn = f'<button class="icon-btn btn-unfinish" onclick="unfinishGame({r["appid"]}, this)">Unfinish</button>'
+        finish_btn = f'<button class="icon-btn btn-unfinish" title="Unfinish" onclick="unfinishGame({r["appid"]}, this)">Revive</button>'
 
     rating_val = int(r['rating'] or 0)
     return f'''
         <div class="game-card">
             <div class="btn-group">
                 {finish_btn}
-                <button class="icon-btn btn-up-next" onclick="updateGame({r['appid']}, 'up_next', this)">Up Next</button>
-                <button class="icon-btn btn-ban" onclick="updateGame({r['appid']}, 'ban', this)">Ban</button>
-                <button class="icon-btn btn-ignore" onclick="updateGame({r['appid']}, 'ignore', this)">Ignore</button>
+                <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({r['appid']}, 'up_next', this)">Next</button>
+                <button class="icon-btn btn-ignore" title="Ignore" onclick="updateGame({r['appid']}, 'ignore', this)">Ignore</button>
+                <button class="icon-btn btn-ban" title="Ban" onclick="updateGame({r['appid']}, 'ban', this)">Ban</button>
             </div>
             <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{r['appid']}/header.jpg">
-            <div style="padding: 5px;">
-                <b>{r['name']}{replay_flag}</b><br>
-                <span class="match-score">
-                    Match: {round(r['match_score'], 1)}%
-                </span>
-                <div style="display:flex; align-items:center; gap:6px; margin-top:5px;">
-                    <span style="font-size:0.75em; color:#8899aa;">Rating:</span>
-                    <input type="range" min="0" max="10" value="{rating_val}"
-                           style="flex:1; accent-color:#66c0f4;"
-                           onchange="rateCard({r['appid']}, this)">
-                    <span style="font-weight:bold; color:#66c0f4; min-width:14px;">{rating_val}</span>
+            <div style="padding: 2px;">
+                <div style="margin-bottom: 5px; min-height: 2.2em; display: flex; align-items: flex-start;">
+                    <b style="color: white; font-size: 0.85em; line-height: 1.2;">{r['name']}{replay_flag}</b>
                 </div>
-                <button class="why-toggle" onclick="toggleWhy(this)">Why?</button>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span class="match-score" style="font-size: 0.75em; opacity: 0.8;">
+                        {round(r['match_score'], 1)}% Match
+                    </span>
+                </div>
+                <div style="background: rgba(255,255,255,0.05); padding: 6px; border-radius: 6px; margin-bottom: 8px;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                        <input type="range" min="0" max="10" value="{rating_val}"
+                               style="flex:1; accent-color:var(--accent); cursor: pointer; height: 4px;"
+                               onchange="rateCard({r['appid']}, this)">
+                        <span style="font-weight:800; color:var(--accent); min-width:14px; font-size: 0.8em;">{rating_val}</span>
+                    </div>
+                </div>
+                <button class="why-toggle" style="font-size: 0.7em; padding: 4px 8px;" onclick="toggleWhy(this)">Why?</button>
                 <div class="why-box">{why_html}</div>
             </div>
         </div>'''
