@@ -5,15 +5,16 @@ import requests
 from tqdm import tqdm
 
 from config import STEAM_API_KEY, STEAM_ID, CEDB_USER_ID
-from database import get_db
+from database import get_db, get_metadata
 
 
 def sync_steam_library():
     """Fetch owned games from Steam API and update the database."""
     url = "http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
+    steam_id = get_metadata('STEAM_ID', STEAM_ID)
     params = {
         "key": STEAM_API_KEY,
-        "steamid": STEAM_ID,
+        "steamid": steam_id,
         "format": "json",
         "include_appinfo": True,
     }
@@ -40,7 +41,8 @@ def sync_steam_library():
 
 def sync_cedb_difficulties():
     """Fetch difficulty tiers from CEDB (completionist.me) and update games."""
-    if not CEDB_USER_ID:
+    cedb_user_id = get_metadata('CEDB_USER_ID', CEDB_USER_ID)
+    if not cedb_user_id:
         return
 
     conn = get_db()
@@ -54,7 +56,7 @@ def sync_cedb_difficulties():
         conn.close()
         return
 
-    res = requests.get(f"https://cedb.me/api/user/{CEDB_USER_ID}/games")
+    res = requests.get(f"https://cedb.me/api/user/{cedb_user_id}/games")
     if res.status_code == 200:
         updates = []
         for item in res.json():

@@ -93,6 +93,34 @@ def init_db():
             pass  # Column already exists
 
     c.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)')
+    
+    # Initialize default settings if they don't exist
+    from config import NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE
+    defaults = {
+        'NUM_CATEGORIES': str(NUM_CATEGORIES),
+        'GAMES_PER_CATEGORY': str(GAMES_PER_CATEGORY),
+        'MIN_PLAYTIME': str(MIN_PLAYTIME),
+        'CAROUSEL_SIZE': str(CAROUSEL_SIZE)
+    }
+    for key, value in defaults.items():
+        c.execute('INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)', (key, value))
+
+    conn.commit()
+    conn.close()
+
+
+def get_metadata(key, default=None):
+    """Get a metadata value from the database."""
+    conn = get_db()
+    row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row['value'] if row else default
+
+
+def set_metadata(key, value):
+    """Set a metadata value in the database."""
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
 
