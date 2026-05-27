@@ -10,7 +10,7 @@ from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE, )
+from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE, IGNORE_DURATION_DAYS, UP_NEXT_DURATION_DAYS)
 from database import get_db, init_db, cleanup_expired_temp_ratings, get_metadata, set_metadata
 from recommender import render_game_card, build_persistent_sections
 from sync import sync_steam_library, sync_cedb_difficulties, sync_game_tags, get_game_data
@@ -103,14 +103,15 @@ def update_game():
     action = data['action']
 
     now = int(time.time())
-    thirty_days = 30 * 24 * 60 * 60
 
     if action == 'ignore':
+        ignore_days = int(get_metadata('IGNORE_DURATION_DAYS', IGNORE_DURATION_DAYS))
+        duration = ignore_days * 24 * 60 * 60
         conn.execute("""
                      UPDATE games
                      SET ignore_until = ?
                      WHERE appid = ?
-                     """, (now + thirty_days, appid))
+                     """, (now + duration, appid))
 
     elif action == 'ban':
         conn.execute("""
@@ -149,14 +150,15 @@ def update_game():
                      (rating, appid))
 
     elif action == 'up_next':
-        # Set temporary rating of 10 that expires in 3 months
-        three_months = 90 * 24 * 60 * 60
+        # Set temporary rating of 10 that expires in X days
+        up_next_days = int(get_metadata('UP_NEXT_DURATION_DAYS', UP_NEXT_DURATION_DAYS))
+        duration = up_next_days * 24 * 60 * 60
         conn.execute("""
                      UPDATE games
                      SET temp_rating       = 10,
                          temp_rating_until = ?
                      WHERE appid = ?
-                     """, (now + three_months, appid))
+                     """, (now + duration, appid))
 
     conn.commit()
     conn.close()
@@ -172,12 +174,15 @@ def settings():
             'GAMES_PER_CATEGORY': int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY)),
             'MIN_PLAYTIME': int(get_metadata('MIN_PLAYTIME', MIN_PLAYTIME)),
             'CAROUSEL_SIZE': int(get_metadata('CAROUSEL_SIZE', CAROUSEL_SIZE)),
+            'IGNORE_DURATION_DAYS': int(get_metadata('IGNORE_DURATION_DAYS', IGNORE_DURATION_DAYS)),
+            'UP_NEXT_DURATION_DAYS': int(get_metadata('UP_NEXT_DURATION_DAYS', UP_NEXT_DURATION_DAYS)),
             'STEAM_ID': get_metadata('STEAM_ID', os.getenv("STEAM_ID", "")),
             'CEDB_USER_ID': get_metadata('CEDB_USER_ID', os.getenv("CEDB_USER_ID", ""))
         })
 
     data = request.json
-    for key in ['NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 'STEAM_ID', 'CEDB_USER_ID']:
+    for key in ['NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 
+                'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS', 'STEAM_ID', 'CEDB_USER_ID']:
         if key in data:
             set_metadata(key, data[key])
     

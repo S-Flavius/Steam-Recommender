@@ -95,12 +95,15 @@ def init_db():
     c.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)')
     
     # Initialize default settings if they don't exist
-    from config import NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE
+    from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE, 
+                        IGNORE_DURATION_DAYS, UP_NEXT_DURATION_DAYS)
     defaults = {
         'NUM_CATEGORIES': str(NUM_CATEGORIES),
         'GAMES_PER_CATEGORY': str(GAMES_PER_CATEGORY),
         'MIN_PLAYTIME': str(MIN_PLAYTIME),
-        'CAROUSEL_SIZE': str(CAROUSEL_SIZE)
+        'CAROUSEL_SIZE': str(CAROUSEL_SIZE),
+        'IGNORE_DURATION_DAYS': str(IGNORE_DURATION_DAYS),
+        'UP_NEXT_DURATION_DAYS': str(UP_NEXT_DURATION_DAYS)
     }
     for key, value in defaults.items():
         c.execute('INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)', (key, value))

@@ -28,6 +28,12 @@
         
         <label>Carousel Size:</label>
         <input type="number" id="conf_CAROUSEL_SIZE" style="background: #2a475e; color: white; border: none; padding: 5px;">
+        
+        <label>Ignore Duration (days):</label>
+        <input type="number" id="conf_IGNORE_DURATION_DAYS" style="background: #2a475e; color: white; border: none; padding: 5px;">
+        
+        <label>Up Next Duration (days):</label>
+        <input type="number" id="conf_UP_NEXT_DURATION_DAYS" style="background: #2a475e; color: white; border: none; padding: 5px;">
     </div>
     <div style="margin-top: 15px; text-align: right;">
         <button class="why-toggle" onclick="toggleSettings()">Cancel</button>
@@ -99,7 +105,7 @@
     }
 
     function saveSettings() {
-        const keys = ['STEAM_ID', 'CEDB_USER_ID', 'NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE'];
+        const keys = ['STEAM_ID', 'CEDB_USER_ID', 'NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 'IGNORE_DURATION_DAYS', 'UP_NEXT_DURATION_DAYS'];
         const payload = {};
         keys.forEach(k => {
             payload[k] = document.getElementById('conf_' + k).value;
