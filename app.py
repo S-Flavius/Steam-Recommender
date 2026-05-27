@@ -79,9 +79,9 @@ def get_carousel_html(conn):
         
         # Determine which finish button to show
         if not g['finished']:
-            finish_btn = f'<button class="icon-btn btn-finish" title="Finish" onclick="updateGame({g["appid"]}, \'finish\', this)">Done</button>'
+            finish_btn = f'<button class="icon-btn btn-finish" title="Finish" onclick="finishGame({g["appid"]}, this)">Done</button>'
         else:
-            finish_btn = f'<button class="icon-btn btn-unfinish" title="Unfinish" onclick="updateGame({g["appid"]}, \'unfinish\', this)">Revive</button>'
+            finish_btn = f'<button class="icon-btn btn-unfinish" title="Unfinish" onclick="unfinishGame({g["appid"]}, this)">Revive</button>'
 
         part = f'''
         <div class="rate-card" data-appid="{g['appid']}">
@@ -193,8 +193,9 @@ def update_game():
                      """, (now + duration, appid))
 
     conn.commit()
+    unrated_count = get_unrated_count(conn)
     conn.close()
-    return jsonify({"success": True})
+    return jsonify({"success": True, "unrated_count": unrated_count})
 
 
 @app.route('/settings', methods=['GET', 'POST'])

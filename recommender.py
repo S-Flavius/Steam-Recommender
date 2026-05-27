@@ -125,7 +125,7 @@ def render_game_card(r, rated_db_games, vectorizer, tfidf, rated_start_idx):
 
     rating_val = int(r['rating'] or 0)
     return f'''
-        <div class="game-card">
+        <div class="game-card" data-appid="{r['appid']}">
             <div class="btn-group">
                 {finish_btn}
                 <button class="icon-btn btn-up-next" title="Up Next" onclick="updateGame({r['appid']}, 'up_next', this)">Next</button>

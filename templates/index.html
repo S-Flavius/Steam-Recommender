@@ -72,8 +72,8 @@
 
 <script>
     function updateGame(appid, action, btn, value = null) {
-        let card = btn.closest('.rate-card') || btn.closest('.game-card');
-        card.style.opacity = '0.5';
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        cards.forEach(card => card.style.opacity = '0.5');
 
         const payload = {appid: appid, action: action};
         if (value !== null) payload.value = value;
@@ -82,10 +82,12 @@
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
-        }).then(() => {
+        }).then(res => res.json()).then(data => {
             if (action !== 'rate' && action !== 'unfinish') {
-                card.style.opacity = '0';
-                setTimeout(() => card.remove(), 300);
+                cards.forEach(card => {
+                    card.style.opacity = '0';
+                    setTimeout(() => card.remove(), 300);
+                });
                 
                 // If it was "Up Next", we should probably trigger a re-recommendation
                 // because it needs to move from carousel/somewhere to Top Games
@@ -93,34 +95,69 @@
                     setTimeout(() => generateRecommendations(), 500);
                 }
 
-                // Decrement count
+                // Update count from server
                 const countEl = document.getElementById('unratedCount');
-                if (countEl) {
-                    let current = parseInt(countEl.textContent.match(/\d+/)[0]);
-                    if (current > 0) {
-                        countEl.textContent = `(${current - 1} left to rate)`;
-                    }
+                if (countEl && data.unrated_count !== undefined) {
+                    countEl.textContent = `(${data.unrated_count} left to rate)`;
                 }
             } else {
-                card.style.opacity = '1';
+                cards.forEach(card => {
+                    card.style.opacity = '1';
+                    
+                    // Sync values across all cards of the same appid
+                    if (action === 'rate' && value !== null) {
+                        const slider = card.querySelector('.rate-slider') || card.querySelector('input[type="range"]');
+                        if (slider) {
+                            slider.value = value;
+                            if (slider.nextElementSibling && slider.nextElementSibling.tagName === 'SPAN') {
+                                slider.nextElementSibling.textContent = value;
+                            }
+                        }
+                    }
+                });
+                
+                // If we rated something 0 -> >0, unrated count might change
+                const countEl = document.getElementById('unratedCount');
+                if (countEl && data.unrated_count !== undefined) {
+                    countEl.textContent = `(${data.unrated_count} left to rate)`;
+                }
             }
         });
     }
 
     function rateCard(appid, slider) {
         const val = parseInt(slider.value);
-        slider.nextElementSibling.textContent = val;
+        // Optimistically update all sliders with same appid
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        cards.forEach(card => {
+            const s = card.querySelector('.rate-slider') || card.querySelector('input[type="range"]');
+            if (s) {
+                s.value = val;
+                if (s.nextElementSibling && s.nextElementSibling.tagName === 'SPAN') {
+                    s.nextElementSibling.textContent = val;
+                }
+            }
+        });
         updateGame(appid, 'rate', slider, val);
     }
 
     function finishGame(appid, btn) {
-        let card = btn.closest('.game-card');
-        let ratingSlider = card.querySelector('input[type="range"]');
-        let ratingValue = ratingSlider ? parseInt(ratingSlider.value) : 0;
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        let ratingValue = 0;
+        // Try to find a rating value from any of the cards
+        for (let card of cards) {
+            let slider = card.querySelector('.rate-slider') || card.querySelector('input[type="range"]');
+            if (slider) {
+                ratingValue = parseInt(slider.value);
+                break;
+            }
+        }
         updateGame(appid, 'finish', btn, ratingValue);
     }
 
     function unfinishGame(appid, btn) {
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        cards.forEach(card => card.style.opacity = '0.5');
         updateGame(appid, 'unfinish', btn);
         // We might want to reload recommendations to see it back in backlog,
         // or just let the user re-train. For now, just show it's done.
@@ -130,9 +167,24 @@
     }
 
     function toggleWhy(btn) {
+        let card = btn.closest('.rate-card') || btn.closest('.game-card');
+        let appid = card.getAttribute('data-appid');
+        let cards = document.querySelectorAll(`[data-appid="${appid}"]`);
+        
         const box = btn.nextElementSibling;
-        box.classList.toggle('open');
-        btn.textContent = box.classList.contains('open') ? 'Hide' : 'Why?';
+        const newState = !box.classList.contains('open');
+        
+        cards.forEach(c => {
+            const b = c.querySelector('.why-box');
+            const t = c.querySelector('.why-toggle');
+            if (b) {
+                if (newState) b.classList.add('open');
+                else b.classList.remove('open');
+            }
+            if (t) {
+                t.textContent = newState ? 'Hide' : 'Why?';
+            }
+        });
     }
 
     function openModal() {
