@@ -1,4 +1,5 @@
 import math
+import os
 import threading
 import time
 
@@ -10,7 +11,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config import (NUM_CATEGORIES, GAMES_PER_CATEGORY, MIN_PLAYTIME, CAROUSEL_SIZE, )
-from database import get_db, init_db, cleanup_expired_temp_ratings
+from database import get_db, init_db, cleanup_expired_temp_ratings, get_metadata, set_metadata
 from recommender import render_game_card, build_persistent_sections
 from sync import sync_steam_library, sync_cedb_difficulties, sync_game_tags, get_game_data
 
@@ -45,6 +46,7 @@ def _background_sync():
 def get_carousel_html():
     """Build HTML for the rating carousel of unrated games."""
     conn = get_db()
+    carousel_size = int(get_metadata('CAROUSEL_SIZE', CAROUSEL_SIZE))
     games = conn.execute("""
                          SELECT *
                          FROM games
@@ -55,7 +57,7 @@ def get_carousel_html():
                          ORDER BY CASE WHEN finished = 1 THEN 0 ELSE 1 END,
                                   playtime DESC
                          LIMIT ?
-                         """, (int(time.time()), int(time.time()), CAROUSEL_SIZE)).fetchall()
+                         """, (int(time.time()), int(time.time()), carousel_size)).fetchall()
 
     html_parts = []
     for g in games:
@@ -82,6 +84,8 @@ def get_carousel_html():
 @app.route('/')
 def index():
     """Main page - sync library and show rating carousel."""
+    init_db()  # Ensure DB and metadata are initialized
+    
     # Start background sync
     threading.Thread(target=_background_sync, daemon=True).start()
 
@@ -159,6 +163,27 @@ def update_game():
     return jsonify({"success": True})
 
 
+@app.route('/settings', methods=['GET', 'POST'])
+def settings():
+    """Get or update user configuration."""
+    if request.method == 'GET':
+        return jsonify({
+            'NUM_CATEGORIES': int(get_metadata('NUM_CATEGORIES', NUM_CATEGORIES)),
+            'GAMES_PER_CATEGORY': int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY)),
+            'MIN_PLAYTIME': int(get_metadata('MIN_PLAYTIME', MIN_PLAYTIME)),
+            'CAROUSEL_SIZE': int(get_metadata('CAROUSEL_SIZE', CAROUSEL_SIZE)),
+            'STEAM_ID': get_metadata('STEAM_ID', os.getenv("STEAM_ID", "")),
+            'CEDB_USER_ID': get_metadata('CEDB_USER_ID', os.getenv("CEDB_USER_ID", ""))
+        })
+
+    data = request.json
+    for key in ['NUM_CATEGORIES', 'GAMES_PER_CATEGORY', 'MIN_PLAYTIME', 'CAROUSEL_SIZE', 'STEAM_ID', 'CEDB_USER_ID']:
+        if key in data:
+            set_metadata(key, data[key])
+    
+    return jsonify({"success": True})
+
+
 def get_game_weighted_tags(conn, appid):
     """
     Fetch tags for a game and calculate their weights directly in logic.
@@ -230,6 +255,7 @@ def recommend():
             g['rating'] = g['temp_rating']
 
     # 3. Candidate pool
+    min_playtime = int(get_metadata('MIN_PLAYTIME', MIN_PLAYTIME))
     all_candidates = [dict(r) for r in conn.execute("""
                                                     SELECT *
                                                     FROM games
@@ -237,7 +263,7 @@ def recommend():
                                                       AND (ignore_until = 0 OR ignore_until < ?)
                                                       AND finished = 0
                                                       AND playtime >= ?
-                                                    """, (int(time.time()), MIN_PLAYTIME)).fetchall()]
+                                                    """, (int(time.time()), min_playtime)).fetchall()]
 
     backlog = all_candidates[:150]
 
@@ -373,7 +399,8 @@ def recommend():
             {"results_html": "<h2>No matches found. Try rating more games!</h2>", "carousel_html": get_carousel_html()})
 
     # Clustering
-    num_clusters = min(NUM_CATEGORIES, len(df_backlog) // 2) or 1
+    num_categories = int(get_metadata('NUM_CATEGORIES', NUM_CATEGORIES))
+    num_clusters = min(num_categories, len(df_backlog) // 2) or 1
     kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
     df_backlog['cluster'] = kmeans.fit_predict(backlog_vecs)
 
@@ -407,12 +434,13 @@ def recommend():
 
     # 2. Dynamic cluster columns
     res_html = persistent_html
+    games_per_category = int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY))
     for cat, group in df_backlog.groupby('category'):
         filtered = group[~group['appid'].isin(shown_app_ids)]
         if filtered.empty:
             filtered = group
         res_html += f'<div class="column"><div class="col-title">{cat}</div>'
-        for _, r in filtered.head(GAMES_PER_CATEGORY).iterrows():
+        for _, r in filtered.head(games_per_category).iterrows():
             res_html += render_game_card(r.to_dict(), rated_db_games, vectorizer, tfidf, rated_start_idx)
         res_html += '</div>'
 
