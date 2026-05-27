@@ -284,7 +284,7 @@ def build_recommendations_html(conn, show_finished=False):
     
     if not remaining.empty:
         # If we have fewer games than requested categories, reduce category count
-        actual_num_clusters = min(num_categories, len(remaining))
+        actual_num_clusters = max(1, min(num_categories, len(remaining)))
         
         # Re-vectorize remaining to get better clusters
         rem_tags = [" ".join(extract_tags(t)) for t in remaining['tags']]
@@ -467,12 +467,13 @@ def build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorize
         return html
 
     # Top Games - best overall matches
-    top_rows = df_backlog.head(GAMES_PER_CATEGORY)
+    games_per_cat = int(get_metadata('GAMES_PER_CATEGORY', GAMES_PER_CATEGORY))
+    top_rows = df_backlog.head(games_per_cat)
     sections.append(make_column("Top Games", top_rows))
 
     # Hard Games - anything not 'Easy' difficulty
     hard_mask = df_backlog['difficulty'].fillna('Easy').str.lower() != 'easy'
-    hard_rows = df_backlog[hard_mask].head(GAMES_PER_CATEGORY)
+    hard_rows = df_backlog[hard_mask].head(games_per_cat)
     sections.append(make_column("Hard Games", hard_rows))
 
     # Chill Games - tag-based
@@ -483,23 +484,23 @@ def build_persistent_sections(df_backlog, df_finished, rated_db_games, vectorize
         return bool(tokens & CHILL_TAGS)
 
     chill_mask = df_backlog['tags'].apply(is_chill)
-    chill_rows = df_backlog[chill_mask].head(GAMES_PER_CATEGORY)
+    chill_rows = df_backlog[chill_mask].head(games_per_cat)
     sections.append(make_column("Chill Games", chill_rows))
 
     # Recently Played - unfinished games played within last 30 days
     recent_mask = (df_backlog['finished'] == 0) & (df_backlog['last_played'] > now - 30 * 24 * 3600)
-    recent_rows = df_backlog[recent_mask].sort_values('last_played', ascending=False).head(GAMES_PER_CATEGORY)
+    recent_rows = df_backlog[recent_mask].sort_values('last_played', ascending=False).head(games_per_cat)
     sections.append(make_column("Recently Played", recent_rows))
 
     # Finished Games - to allow marking as unfinished
     # These were separated in app.py to prevent them from appearing in other columns
     if show_finished:
-        finished_rows = df_finished.sort_values('last_played', ascending=False).head(GAMES_PER_CATEGORY)
+        finished_rows = df_finished.sort_values('last_played', ascending=False).head(games_per_cat)
         sections.append(make_column("Finished Games", finished_rows))
 
     # Forgotten Games - unfinished games not played in over 1 year
     forgotten_mask = (df_backlog['finished'] == 0) & (df_backlog['last_played'] < now - 365 * 24 * 3600)
-    forgotten_rows = df_backlog[forgotten_mask].sort_values('last_played', ascending=True).head(GAMES_PER_CATEGORY)
+    forgotten_rows = df_backlog[forgotten_mask].sort_values('last_played', ascending=True).head(games_per_cat)
     sections.append(make_column("Forgotten Games", forgotten_rows))
 
     return "".join(sections), shown

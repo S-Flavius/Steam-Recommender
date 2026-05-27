@@ -154,6 +154,7 @@ h1 {
     overflow-x: auto;
     padding-bottom: 40px;
     scrollbar-width: thin;
+    min-height: 400px;
 }
 
 .column {
@@ -163,6 +164,7 @@ h1 {
     border-radius: 12px;
     border-top: 3px solid var(--accent);
     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    height: fit-content;
 }
 
 .col-title {

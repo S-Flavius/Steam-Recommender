@@ -51,8 +51,15 @@ def index():
     conn = get_db()
     unrated_count = get_unrated_count(conn)
     carousel_html = get_carousel_html(conn)
+    
+    show_finished = int(get_metadata('SHOW_FINISHED', '0'))
+    results_html = build_recommendations_html(conn, show_finished=bool(show_finished))
+    
     conn.close()
-    return render_template('index.html', carousel_html=carousel_html, unrated_count=unrated_count)
+    return render_template('index.html', 
+                           carousel_html=carousel_html, 
+                           unrated_count=unrated_count,
+                           results_html=results_html)
 
 
 @app.route('/update_game', methods=['POST'])
@@ -166,7 +173,8 @@ def recommend():
                      (score, aid))
     conn.commit()
 
-    res_html = build_recommendations_html(conn)
+    show_finished = int(get_metadata('SHOW_FINISHED', '0'))
+    res_html = build_recommendations_html(conn, show_finished=bool(show_finished))
     
     unrated_count = get_unrated_count(conn)
     carousel_html = get_carousel_html(conn)

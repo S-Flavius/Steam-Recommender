@@ -18,6 +18,12 @@
     </h1>
     
     <div class="carousel-container" id="carousel">{{ carousel_html | safe }}</div>
+    
+    <button class="btn-submit" id="trainBtn" onclick="generateRecommendations()">Train AI & Re-Cluster</button>
+    <div class="loading-text" id="loading">AI is crunching the data... Please wait...</div>
+    
+    <div class="board" id="results">{{ results_html | safe }}</div>
+</div>
 
 <!-- Settings Modal -->
 <div id="settingsModal" class="modal">
@@ -62,12 +68,6 @@
             <button class="why-toggle" style="background: var(--accent); color: white; border: none;" onclick="saveSettings()">Save & Reload</button>
         </div>
     </div>
-</div>
-
-<button class="btn-submit" id="trainBtn" onclick="generateRecommendations()">Train AI & Re-Cluster</button>
-<div class="loading-text" id="loading">AI is crunching the data... Please wait...</div>
-
-<div class="board" id="results"></div>
 </div>
 
 <script>
