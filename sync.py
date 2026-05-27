@@ -101,43 +101,70 @@ def get_game_data(appid, force_refresh=False):
     except Exception:
         data = {}
 
-    # Parse tags into ordered string (first 30 in API order)
+    # Parse tags into ordered string with weights (first 30 in API order)
     raw_tags = data.get("tags", {})
+    tag_list = []
     if isinstance(raw_tags, dict):
-        tag_keys = list(raw_tags.keys())[:30]  # Take first 30 in order
-        tags = " ".join([t.replace('-', '_').replace(' ', '_').lower() for t in tag_keys])
-    else:
-        tags = ""
+        tag_items = list(raw_tags.items())[:30]  # Take first 30 in order
+        for t, count in tag_items:
+            tag_name = t.replace('-', '_').replace(' ', '_').lower()
+            tag_list.append((tag_name, count))
+    
+    tags_str = " ".join([f"{t}:{count}" for t, count in tag_list])
 
     # Extract extra data to save in DB
     name = data.get("name", "")
-    developer = data.get("developer", "")
-    publisher = data.get("publisher", "")
+    developer_str = data.get("developer", "")
+    publisher_str = data.get("publisher", "")
 
     # Calculate Steam score using a Wilson score interval
-    pos, neg = data.get("positive", 0), data.get("negative", 0)
+    pos, neg = data.get("positive") or 0, data.get("negative") or 0
     total = pos + neg
     if total > 0:
         steam_score = (pos / total - (pos / total - 0.5) * (2 ** -math.log10(total + 1))) * 10
     else:
         steam_score = 5.0
 
-    # Try updating the new columns along with tags
-    try:
-        c.execute("""
-            UPDATE games 
-            SET tags = ?, 
-                steam_score = ?, 
-                tags_updated = ?,
-                name = CASE WHEN name IS NULL OR name = 'Unknown' THEN ? ELSE name END,
-                developer = ?,
-                publisher = ?
-            WHERE appid = ?
-        """, (tags, steam_score, int(time.time()), name, developer, publisher, appid))
-    except Exception:
-        # Fallback if the columns aren't there for some reason
-        c.execute("UPDATE games SET tags = ?, steam_score = ?, tags_updated = ? WHERE appid = ?",
-                  (tags, steam_score, int(time.time()), appid))
+    # Update main games table
+    c.execute("""
+        UPDATE games 
+        SET tags = ?, 
+            steam_score = ?, 
+            tags_updated = ?,
+            name = CASE WHEN name IS NULL OR name = 'Unknown' THEN ? ELSE name END,
+            developer = ?,
+            publisher = ?
+        WHERE appid = ?
+    """, (tags_str, steam_score, int(time.time()), name, developer_str, publisher_str, appid))
+
+    # Normalized storage
+    # 1. Tags
+    for tag_name, count in tag_list:
+        c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+        c.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+        tag_id = c.fetchone()[0]
+        c.execute("INSERT OR REPLACE INTO game_tags (appid, tag_id, count) VALUES (?, ?, ?)",
+                  (appid, tag_id, count))
+
+    # 2. Developers
+    if developer_str:
+        devs = [d.strip() for d in developer_str.split(',')]
+        for dev_name in devs:
+            c.execute("INSERT OR IGNORE INTO developers (name) VALUES (?)", (dev_name,))
+            c.execute("SELECT id FROM developers WHERE name = ?", (dev_name,))
+            dev_id = c.fetchone()[0]
+            c.execute("INSERT OR REPLACE INTO game_developers (appid, developer_id) VALUES (?, ?)",
+                      (appid, dev_id))
+
+    # 3. Publishers
+    if publisher_str:
+        pubs = [p.strip() for p in publisher_str.split(',')]
+        for pub_name in pubs:
+            c.execute("INSERT OR IGNORE INTO publishers (name) VALUES (?)", (pub_name,))
+            c.execute("SELECT id FROM publishers WHERE name = ?", (pub_name,))
+            pub_id = c.fetchone()[0]
+            c.execute("INSERT OR REPLACE INTO game_publishers (appid, publisher_id) VALUES (?, ?)",
+                      (appid, pub_id))
         
     conn.commit()
     c.execute("SELECT * FROM games WHERE appid = ?", (appid,))

@@ -159,30 +159,51 @@ def update_game():
     return jsonify({"success": True})
 
 
-def extract_tags_and_weights(tag_str, default_weight=0.1):
+def get_game_weighted_tags(conn, appid):
     """
-    Parses a space-separated tag string, assigns weights based on position (decreasing).
-    Weights decay linearly from 1.0 to default_weight over all tags.
-    Returns a list of tags, and a dict of weights.
+    Fetch tags for a game and calculate their weights directly in logic.
+    Returns (list_of_tags, dict_of_weights).
     """
-    if not tag_str:
+    rows = conn.execute("""
+        SELECT t.name, gt.count
+        FROM game_tags gt
+        JOIN tags t ON gt.tag_id = t.id
+        WHERE gt.appid = ?
+    """, (appid,)).fetchall()
+
+    if not rows:
         return [], {}
 
     tags = []
+    raw_counts = {}
+    for r in rows:
+        tag_name = r['name']
+        count = float(r['count'] or 1.0)
+        tags.append(tag_name)
+        raw_counts[tag_name] = count
+
+    num_tags = len(tags)
+    default_weight = 0.1
     weights = {}
-
-    tokens = tag_str.split()
-
-    num_tags = len(tokens)
-
-    for i, tag in enumerate(tokens):
+    
+    # 1. Positional relevancy (based on current order in DB, which matches Steam order if inserted correctly)
+    pos_weights = {}
+    for i, tag in enumerate(tags):
         if num_tags > 1:
-            weight = 1.0 - (i / (num_tags - 1)) * (1.0 - default_weight)
+            pos_weights[tag] = 1.0 - (i / (num_tags - 1)) * (1.0 - default_weight)
         else:
-            weight = 1.0
+            pos_weights[tag] = 1.0
 
-        tags.append(tag)
-        weights[tag] = weight
+    # 2. Count-based weights
+    max_count = max(raw_counts.values()) if raw_counts else 1.0
+    count_weights = {}
+    for tag in tags:
+        count_weights[tag] = (raw_counts[tag] / max_count) * (1.0 - default_weight) + default_weight
+
+    # 3. Combine
+    for tag in tags:
+        combined = pos_weights[tag] * count_weights[tag]
+        weights[tag] = round(max(0.01, min(1.0, combined)), 4)
 
     return tags, weights
 
@@ -238,68 +259,75 @@ def recommend():
 
     # Profile building
     for g in rated_db_games:
-        # Load extra fields dynamically if needed
-        game_data = get_game_data(g['appid'])
-        t = game_data.get('tags', '')
-        s_db = game_data.get('steam_score', 5.0)
-
-        g['tags'] = t
-        diff = -math.fabs(float(g['rating']) - float(s_db))
-        weight = float(g['rating']) * 1.1 + diff
-
-        tags, weights = extract_tags_and_weights(t)
+        tags, weights = get_game_weighted_tags(conn, g['appid'])
+        
+        s_db = g.get('steam_score')
+        if s_db is None:
+            s_db = 5.0
+        
+        diff = -math.fabs(float(g.get('rating') or 0) - float(s_db))
+        weight = float(g.get('rating') or 0) * 1.1 + diff
 
         # Add metadata as tags with max weight
-        if game_data.get('developer'):
-            dev_tag = game_data['developer'].replace(' ', '_').lower()
-            tags.append(dev_tag)
-            weights[dev_tag] = 1.0
-            meta_tags.add(dev_tag)
-        if game_data.get('publisher') and game_data.get('publisher') != game_data.get('developer'):
-            pub_tag = game_data['publisher'].replace(' ', '_').lower()
-            tags.append(pub_tag)
-            weights[pub_tag] = 1.0
-            meta_tags.add(pub_tag)
+        if g.get('developer'):
+            devs = [d.strip() for d in g['developer'].split(',')]
+            for dev in devs:
+                dev_tag = dev.replace(' ', '_').lower()
+                if dev_tag not in tags:
+                    tags.append(dev_tag)
+                weights[dev_tag] = 1.0
+                meta_tags.add(dev_tag)
+        if g.get('publisher'):
+            pubs = [p.strip() for p in g['publisher'].split(',')]
+            for pub in pubs:
+                pub_tag = pub.replace(' ', '_').lower()
+                if pub_tag not in tags:
+                    tags.append(pub_tag)
+                weights[pub_tag] = 1.0
+                meta_tags.add(pub_tag)
 
         # Reconstruct tag string for recommender functions and tfidf
-        g['tags'] = " ".join(tags)
+        g['tags'] = " ".join([f"{t}:{weights[t]*100}" for t in tags]) # Re-add counts for build_explanation compatibility
         g['weight'] = weight
-        all_tags_list.append(g['tags'])
+        all_tags_list.append(" ".join(tags))
         game_weights.append({"weight": weight, "tag_weights": weights})
 
     # Backlog prep
     for g in backlog:
-        game_data = get_game_data(g['appid'])
-        t = game_data.get('tags', '')
-        g['steam_score'] = game_data.get('steam_score', 5.0)
-
-        tags, weights = extract_tags_and_weights(t)
+        tags, weights = get_game_weighted_tags(conn, g['appid'])
 
         if g['difficulty'] and g['difficulty'] != 'Easy':
             diff_tag = str(g['difficulty']).replace(' ', '_').lower()
-            tags.append(diff_tag)
+            if diff_tag not in tags:
+                tags.append(diff_tag)
             weights[diff_tag] = 1.0
 
         # Add metadata as tags with max weight
-        if game_data.get('developer'):
-            dev_tag = game_data['developer'].replace(' ', '_').lower()
-            tags.append(dev_tag)
-            weights[dev_tag] = 1.0
-            meta_tags.add(dev_tag)
-        if game_data.get('publisher') and game_data.get('publisher') != game_data.get('developer'):
-            pub_tag = game_data['publisher'].replace(' ', '_').lower()
-            tags.append(pub_tag)
-            weights[pub_tag] = 1.0
-            meta_tags.add(pub_tag)
+        if g.get('developer'):
+            devs = [d.strip() for d in g['developer'].split(',')]
+            for dev in devs:
+                dev_tag = dev.replace(' ', '_').lower()
+                if dev_tag not in tags:
+                    tags.append(dev_tag)
+                weights[dev_tag] = 1.0
+                meta_tags.add(dev_tag)
+        if g.get('publisher'):
+            pubs = [p.strip() for p in g['publisher'].split(',')]
+            for pub in pubs:
+                pub_tag = pub.replace(' ', '_').lower()
+                if pub_tag not in tags:
+                    tags.append(pub_tag)
+                weights[pub_tag] = 1.0
+                meta_tags.add(pub_tag)
 
         # Apply temporary rating if active
         if g.get('temp_rating') and g.get('temp_rating_until', 0) > now:
             g['rating'] = g['temp_rating']
 
-        priority_boost = 1.25 if (float(g['rating']) > 0 and not g['finished']) else 1.0
+        priority_boost = 1.25 if (float(g.get('rating') or 0) > 0 and not g.get('finished', 0)) else 1.0
 
-        g['tags'] = " ".join(tags)
-        all_tags_list.append(g['tags'])
+        g['tags'] = " ".join([f"{t}:{weights[t]*100}" for t in tags]) # Re-add counts for build_explanation compatibility
+        all_tags_list.append(" ".join(tags))
         game_weights.append({"priority_boost": priority_boost, "tag_weights": weights})
 
     df_backlog = pd.DataFrame(backlog)
@@ -336,7 +364,7 @@ def recommend():
         df_backlog.loc[i, 'match_score'] *= game_weights[len(rated_db_games) + i]["priority_boost"]
 
     # Add rating bonus
-    df_backlog['match_score'] += df_backlog['rating'].astype(float) * 2.0
+    df_backlog['match_score'] += df_backlog['rating'].fillna(0).astype(float) * 2.0
     df_backlog['match_score'] = np.clip(df_backlog['match_score'], 0, 100)
 
     if df_backlog.empty:

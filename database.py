@@ -29,7 +29,49 @@ def init_db():
             difficulty             TEXT    DEFAULT 'Easy',
             tags                   TEXT    DEFAULT NULL,
             steam_score            REAL    DEFAULT NULL,
-            achievements_completed BOOLEAN DEFAULT 0
+            achievements_completed BOOLEAN DEFAULT 0,
+            ignore_until           INTEGER DEFAULT 0,
+            temp_rating            INTEGER DEFAULT NULL,
+            temp_rating_until      INTEGER DEFAULT NULL,
+            tags_updated           INTEGER DEFAULT NULL,
+            achievements_total     INTEGER DEFAULT 0,
+            achievements_unlocked  INTEGER DEFAULT 0,
+            developer              TEXT    DEFAULT NULL,
+            publisher              TEXT    DEFAULT NULL
+        )
+    ''')
+
+    # Normalized tables
+    c.execute('CREATE TABLE IF NOT EXISTS developers (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
+    c.execute('CREATE TABLE IF NOT EXISTS publishers (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
+    c.execute('CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS game_developers (
+            appid INTEGER,
+            developer_id INTEGER,
+            PRIMARY KEY (appid, developer_id),
+            FOREIGN KEY (appid) REFERENCES games (appid),
+            FOREIGN KEY (developer_id) REFERENCES developers (id)
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS game_publishers (
+            appid INTEGER,
+            publisher_id INTEGER,
+            PRIMARY KEY (appid, publisher_id),
+            FOREIGN KEY (appid) REFERENCES games (appid),
+            FOREIGN KEY (publisher_id) REFERENCES publishers (id)
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS game_tags (
+            appid INTEGER,
+            tag_id INTEGER,
+            count INTEGER,
+            PRIMARY KEY (appid, tag_id),
+            FOREIGN KEY (appid) REFERENCES games (appid),
+            FOREIGN KEY (tag_id) REFERENCES tags (id)
         )
     ''')
 

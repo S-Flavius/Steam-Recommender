@@ -13,10 +13,10 @@ CEDB_USER_ID = os.getenv("CEDB_USER_ID")
 DB_FILE = f"{STEAM_ID}.games.db"
 
 # Recommendation settings
-NUM_CATEGORIES = 20
-GAMES_PER_CATEGORY = 10
+NUM_CATEGORIES = 50
+GAMES_PER_CATEGORY = 15
 MIN_PLAYTIME = 60
-CAROUSEL_SIZE = 100
+CAROUSEL_SIZE = 1500
 
 # Tags that indicate a "chill" game
 CHILL_TAGS = {
